@@ -1,5 +1,7 @@
 """Preparación sin Resolve: expand() de secuencias, build_plan() (raíz común, exclusión) y dest_conflict()."""
-from conftest import write_bin
+import unicodedata
+
+from conftest import NFC, NFD, write_bin
 
 
 def test_importar_no_ejecuta_nada(mp):
@@ -256,3 +258,24 @@ def test_mhl_comment_solo_nombra_las_parciales(mp):
         "MHL MediaManagement: media management TL; parcial: A001 2/37, C001 1/12"
     assert mp.mhl_comment({"label": "TL", "cards": {"B001": cards["B001"]}}) == "MHL MediaManagement: media management TL"
     assert mp.cards_summary(cards) == "A001 2/37 (parcial), B001 5/5, C001 1/12 (parcial)"
+
+
+# ---------- D17 (#4): NFC y NFD de un mismo nombre ----------
+
+def test_scan_nfc_y_nfd_son_un_solo_item(tmp_path, mp, keeps_form):
+    cam = unicodedata.normalize("NFD", "Cámara")
+    clip = write_bin(tmp_path / cam / "A001" / "CLIP" / NFD, seed=1, size=16)
+    (tmp_path / cam / "A001" / "ascmhl").mkdir()
+    nfc_path = str(tmp_path / unicodedata.normalize("NFC", "Cámara") / "A001" / "CLIP" / NFC)
+    got = mp.scan([nfc_path, str(clip)], log=lambda *_: None)
+    assert not got["missing"]
+    assert [it["src"] for it in got["items"]] == [clip]  # la ruta real de disco, carpetas incluidas
+    assert got["items"][0]["card"] == tmp_path / cam / "A001" and got["items"][0]["kind"] == "asc"
+
+
+def test_expand_secuencia_con_prefijo_en_la_otra_forma(tmp_path, mp, keeps_form):
+    seq = tmp_path / "EXR"
+    pre = unicodedata.normalize("NFD", "Ñandú")
+    frames = [write_bin(seq / f"{pre}.{i:04d}.exr", seed=i, size=16) for i in range(1, 5)]
+    pat = str(seq / (unicodedata.normalize("NFC", "Ñandú") + ".[0002-0003].exr"))
+    assert mp.expand(pat, mp.FS()) == frames[1:3]

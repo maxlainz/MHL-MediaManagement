@@ -36,6 +36,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -64,7 +65,7 @@ class FS:
     """Lee cada carpeta UNA vez (clave con secuencias de miles de frames en red). H4, H6: ni un stat por fichero."""
 
     def __init__(self):
-        self.listing, self.near, self.mounts, self.totals = {}, {}, {}, {}
+        self.listing, self.near, self.mounts, self.totals, self.nfc, self.real = {}, {}, {}, {}, {}, {}
 
     def ls(self, d):
         """{nombre: es_carpeta} de la carpeta d (un solo scandir; d_type, sin stat salvo enlaces), o None si no se lee."""
@@ -75,6 +76,31 @@ class FS:
             except OSError:
                 self.listing[d] = None
         return self.listing[d]
+
+    def real_name(self, d, name):
+        """Nombre tal como está en el listado de d, o None. D17: si no está literal, el que coincide en NFC (macOS y
+        SMB pueden guardar NFD; Resolve, una lista o el MHL del DIT, NFC). Un dict NFC → real por carpeta, una vez."""
+        names = self.ls(d)
+        if not names:
+            return None
+        if name in names:
+            return name
+        if d not in self.nfc:
+            self.nfc[d] = {_nfc(n): n for n in names}
+        return self.nfc[d].get(_nfc(name))
+
+    def real_dir(self, d):
+        """Carpeta d con cada componente no ASCII escrito como está en disco (D17). Una ruta ASCII no lista nada."""
+        if d.isascii():
+            return d
+        if d not in self.real:
+            parent, name = os.path.split(d)
+            if not name or parent == d:
+                self.real[d] = d
+            else:
+                rp = self.real_dir(parent)
+                self.real[d] = os.path.join(rp, name if name.isascii() else (self.real_name(rp, name) or name))
+        return self.real[d]
 
     def _nearest(self, d, kind):
         """Ancestro más cercano de d (incluida) con MHL de ese tipo, o None. No sube por encima de un punto de montaje.
@@ -145,22 +171,27 @@ class FS:
         return sorted(out)
 
 
+def _nfc(s):
+    return s if s.isascii() else unicodedata.normalize("NFC", s)
+
+
 def expand(path, fs):
-    """Ruta de Resolve → [Path]. Secuencias clip.[0086400-0086500].exr con un solo listado; sin stat por fichero."""
-    path = os.path.normpath(path)
-    d, name = os.path.split(path)
+    """Ruta de Resolve → [Path]. Secuencias clip.[0086400-0086500].exr con un solo listado; sin stat por fichero.
+    D17: devuelve los nombres reales del listado aunque la ruta llegue en la otra forma Unicode (NFC/NFD)."""
+    d, name = os.path.split(os.path.normpath(path))
+    d = fs.real_dir(d)
     names = fs.ls(d) or {}
-    m = None
-    if name not in names:  # un fichero que existe con corchetes en el nombre no es una secuencia
+    real, m = fs.real_name(d, name), None
+    if real is None:  # un fichero que existe con corchetes en el nombre no es una secuencia
         ms = list(SEQ_RE.finditer(name))
         m = ms[-1] if ms else None
     if not m:
-        return [Path(path)] if name in names and not names[name] else []
+        return [Path(d) / real] if real is not None and not names[real] else []
     lo, hi = int(m.group(1)), int(m.group(2))
-    rx = re.compile(re.escape(name[:m.start()]) + r"(\d+)" + re.escape(name[m.end():]) + r"$")
+    rx = re.compile(re.escape(_nfc(name[:m.start()])) + r"(\d+)" + re.escape(_nfc(name[m.end():])) + r"$")
     out = []
     for n in names:
-        mm = rx.match(n)
+        mm = rx.match(_nfc(n))
         if mm and lo <= int(mm.group(1)) <= hi and not names[n]:
             out.append(Path(d) / n)
     return sorted(out)
@@ -198,7 +229,7 @@ def scan(raw_paths, log=print):
             missing.append(p)
             continue
         card, kind = fs.card_for(files[0].parent)  # los frames comparten carpeta
-        for f in files:
+        for f in files:  # rutas reales del listado: NFC y NFD de un mismo fichero dan un solo item (D17)
             if f not in seen:
                 seen.add(f)
                 items.append({"src": f, "card": card, "kind": kind or "none", "group": p})
@@ -541,6 +572,13 @@ def legacy_hashes(card):
     return out
 
 
+def nfc_match(rel, known, cache, key):
+    """D17: la ruta de known() que es rel en la otra forma Unicode (NFC/NFD), o None. known() se lee una vez por key."""
+    if key not in cache:
+        cache[key] = {_nfc(p): p for p in known()}
+    return cache[key].get(_nfc(rel))
+
+
 def copy_file(src, dst, on_bytes=None):
     dst.parent.mkdir(parents=True, exist_ok=True)
     s = src.stat()
@@ -790,7 +828,7 @@ def _work(job, dest, dry, log, st):
         log("✗ NO se crea el MHL.")
         st.set(force=True, state="failed", msg=f"✗ ASC MHL incompleto en DEST/{where} — MHL NO creado")
         return 1
-    legacy_cache, fails, records = {}, [], []
+    legacy_cache, nfc_cache, fails, records = {}, {}, [], []
     ok_count = 0
     for n, it in enumerate(items, 1):
         st.set(n=n, file=it["rel"], fails=len(fails))
@@ -802,6 +840,12 @@ def _work(job, dest, dry, log, st):
             if it["kind"] == "asc":
                 child, rel = history.find_history_for_path(history.get_relative_file_path(str(dst)))
                 fmts = child.find_existing_hash_formats_for_path(rel) or []
+                alt = None if fmts else nfc_match(rel, lambda: [m.path for hl in child.hash_lists
+                                                               for m in hl.media_hashes], nfc_cache, id(child))
+                if alt:  # D17: el MHL del DIT trae la ruta en la otra forma; el MHL nuevo lleva la de disco (H10)
+                    rel, fmts = alt, child.find_existing_hash_formats_for_path(alt) or []
+                    log(f"  aviso: el MHL de origen nombra {it['rel']} en otra forma Unicode (NFC/NFD); se verifica"
+                        " igual, pero un verificador externo puede darlo por «missing», como al origen")
                 if not fmts:
                     fails.append(f"{it['rel']}: no figura en el MHL de origen"); continue
                 try:
@@ -817,6 +861,8 @@ def _work(job, dest, dry, log, st):
             elif it["kind"] == "legacy":
                 ref = legacy_cache.setdefault(it["card"], legacy_hashes(it["card"]))
                 key = str(Path(it["src"]).relative_to(it["card"]))
+                if key not in ref:  # D17: el .mhl puede traer la ruta en la otra forma Unicode
+                    key = nfc_match(key, lambda: ref, nfc_cache, ("legacy", it["card"])) or key
                 if key not in ref:
                     fails.append(f"{it['rel']}: no figura en el MHL legacy de origen"); continue
                 algo, exp = ref[key]
@@ -1693,7 +1739,7 @@ def cli(argv):
         ok, _ = selftest(keep=a.keep)
         return 0 if ok else 1
     if a.files and a.dest:
-        paths = [l.strip() for l in a.files.read_text().splitlines() if l.strip()]
+        paths = [l.strip() for l in a.files.read_text(encoding="utf-8").splitlines() if l.strip()]
         plan = build_plan(scan(paths, log=lambda *_: None), camera_only=not a.all, full_cards=a.full_cards)
         if not plan["items"]:
             print("Nada que copiar."); return 2

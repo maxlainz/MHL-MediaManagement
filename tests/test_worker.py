@@ -4,13 +4,14 @@ import builtins
 import datetime
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 
 import pytest
 import xxhash
 
-from conftest import isolated_env, write_bin
+from conftest import NFC, NFD, isolated_env, write_bin
 from test_cli import mhl_files, out, run_pull
 
 
@@ -251,5 +252,21 @@ def test_mhl_legacy_suelto_en_tarjeta_asc(tmp_path, ascmhl_cli, ascmhl_debug_cli
     assert r.returncode == 0, out(r)
     assert "[ASC MHL] A001 — 3 de 3 clips" in out(r) and "[MHL legacy]" not in out(r)
     assert (dest / "A001" / "ascmhl").is_dir() and (dest / "A001" / "CLIP" / "old.mhl").is_file()
+    v = verify(tmp_path, ascmhl_debug_cli, dest)
+    assert v.returncode == 0, out(v)
+
+
+def test_legacy_con_nombre_nfc_y_disco_nfd(tmp_path, keeps_form, ascmhl_debug_cli):
+    """D17 (#4): el .mhl legacy nombra el clip en NFC y el disco lo guarda en NFD (o al revés)."""
+    card = tmp_path / "src" / "B001"
+    clip = write_bin(card / "CLIP" / NFD, seed=21)
+    (card / "B001.mhl").write_text(f'<?xml version="1.0" encoding="UTF-8"?><hashlist version="1.1"><hash>'
+                                   f'<file>CLIP/{NFC}</file><size>{clip.stat().st_size}</size><xxhash64be>'
+                                   f'{xxhash.xxh64(clip.read_bytes()).hexdigest()}</xxhash64be></hash></hashlist>',
+                                   encoding="utf-8")
+    dest = tmp_path / "dest"
+    r = run_pull(tmp_path, [card / "CLIP" / NFC], dest)
+    assert r.returncode == 0, out(r)
+    assert NFD in os.listdir(dest / "B001" / "CLIP")
     v = verify(tmp_path, ascmhl_debug_cli, dest)
     assert v.returncode == 0, out(v)

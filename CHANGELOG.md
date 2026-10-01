@@ -12,6 +12,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado
 - Un ASC MHL en cualquier ancestro gana sobre un `.mhl` legacy más cercano (D12, #3).
 
 ### Corregido
+- Nombres con acentos (D17, #4): se usa el nombre real del disco, se deduplican NFC/NFD y la verificación contra el MHL del DIT busca las dos formas (H10).
 - Revisión adversarial con subagentes (bitácora 01). Preparación: `dest_conflict` compara rutas resueltas (`realpath`) y bloquea un destino que sobrescribiría otro fichero de origen, que cayera dentro de una carpeta de origen o que pusiera el `ascmhl/` de una tarjeta dentro del origen; `build_plan` detecta colisiones de ruta en destino; `expand` busca el patrón `[a-b]` solo en el nombre y ya no hace `stat` por clip suelto (H6); `card_for` no sube por encima del punto de montaje; `.MHL` legacy en mayúsculas.
 - Lanzamiento y GUI: `python_for` entiende el trampolín `#!/bin/sh` de pip/uv y `env -S`, y nunca devuelve un intérprete que no sea Python (antes el script podía ejecutarse con `/bin/sh`, que lanzaba el `pip3 install` del docstring); antes de lanzar el worker se comprueba que el intérprete importa `ascmhl` 1.2 y `xxhash`, con mensaje claro si no; los candidatos se ordenan por versión numérica de Python (antes 3.9 ganaba a 3.13); el worker importa `ascmhl` antes de copiar nada; el reenganche exige un PID vivo que sea un worker nuestro (`ps`), tolera ficheros de estado corruptos, marca `failed` los huérfanos y detecta un worker muerto por latido (`updated`, cada 5 s); «Cancelar» se desactiva durante la fase MHL; el `ascmhl/` del DIT se copia a un temporal y se renombra, un `ascmhl/` a medias se informa con un consejo claro; la vista previa y la copia calculan el destino con la misma función (`~`, enlaces, sin `rstrip`), un proyecto llamado `.`/`..` no sale del destino; el error real (stderr) se enseña en la ventana cuando el worker muere sin estado.
 - `install.sh` fija `ascmhl==1.2` y aborta con Python anterior a 3.11.
@@ -22,7 +23,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado
 - ruff sin `ignore`: corregidos `F401` (`shlex`) y `F841` (`fd`) (cierra D8).
 
 ### Decidido
-- D9 confirmada por el owner; D11 (tarjeta parcial: clips + `ascmhl/` del DIT tal cual + aviso; casilla «Tarjeta completa»); D12 (ASC MHL gana sobre un `.mhl` legacy más cercano); D13 (roadmap: v0.3.0 inglés, v0.4.0 clips de varios ficheros, v0.5.0 varios destinos); D14 (varios destinos: una lectura, N escrituras); D15 (nunca en `main`: ramas, PR obligatorio con CI verde, `main` protegida en GitHub).
+- D9 confirmada por el owner; D11 (tarjeta parcial: clips + `ascmhl/` del DIT tal cual + aviso; casilla «Tarjeta completa»); D12 (ASC MHL gana sobre un `.mhl` legacy más cercano); D13 (roadmap: v0.3.0 inglés, v0.4.0 clips de varios ficheros, v0.5.0 varios destinos); D14 (varios destinos: una lectura, N escrituras); D15 (nunca en `main`: ramas, PR obligatorio con CI verde, `main` protegida en GitHub); D16 (selector «Qué copiar» de tres opciones; «Respetar historial MHL» = lo que atestigua el MHL del DIT); D17 (NFC/NFD); D18 (MHL legacy: XXH32 decimal, `<null>`, `<size>`, `.mhl` en ancestros); D19 (aviso con dos salidas cuando el MHL cubre más que las tarjetas usadas).
 
 ### Añadido (v0.1.0)
 - Primera versión del script (`mhl_pull.py`, en Resolve «MHL Pull»):
