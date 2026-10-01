@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -79,3 +80,22 @@ def work_dirs(tmp_path, mp, monkeypatch):
     monkeypatch.setattr(mp, "WORK_DIR", tmp_path / "home" / "work")
     monkeypatch.setattr(mp, "LOG_DIR", tmp_path / "home" / "logs")
     return tmp_path
+
+
+# ---------- D17: nombres con acentos en NFC frente a NFD ----------
+
+NFC = unicodedata.normalize("NFC", "Ñandú.mov")
+NFD = unicodedata.normalize("NFD", "Ñandú.mov")
+
+
+@pytest.fixture
+def keeps_form(tmp_path):
+    """Salta si el sistema de ficheros no conserva la forma Unicode escrita (APFS y ext4 la conservan; HFS+ no)."""
+    for form in (NFC, NFD):
+        probe = tmp_path / f"probe_{len(form)}"
+        probe.mkdir()
+        (probe / form).write_bytes(b"")
+        names = os.listdir(probe)
+        shutil.rmtree(probe)
+        if names != [form]:
+            pytest.skip("este sistema de ficheros normaliza los nombres Unicode")
