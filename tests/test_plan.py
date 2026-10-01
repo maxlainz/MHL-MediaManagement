@@ -162,3 +162,97 @@ def test_legacy_mhl_en_mayusculas(tmp_path, mp):
                                   '<xxhash64be>abcdef</xxhash64be></hash></hashlist>')
     assert mp.FS().card_for(card / "CLIP") == (card, "legacy")
     assert mp.legacy_hashes(card) == {"CLIP/x.mov": ("xxhash64be", "abcdef")}
+
+
+# ---------- D12: un ascmhl/ en cualquier ancestro gana sobre un .mhl legacy más cercano ----------
+
+def test_card_for_ascmhl_gana_a_legacy_mas_cercano(tmp_path, mp):
+    card = tmp_path / "A001"
+    (card / "ascmhl").mkdir(parents=True)
+    write_bin(card / "CLIP" / "A001C001.mov", seed=1, size=16)
+    (card / "CLIP" / "old.mhl").write_text("<hashlist/>")
+    fs = mp.FS()
+    assert fs.card_for(card / "CLIP") == (card, "asc")
+    assert fs.card_for(card) == (card, "asc")
+
+
+def test_card_for_solo_legacy_sigue_siendo_legacy(tmp_path, mp):
+    card = tmp_path / "B001"
+    write_bin(card / "CLIP" / "x.mov", seed=1, size=16)
+    (card / "B001.mhl").write_text("<hashlist/>")
+    (card / "CLIP" / "sub.mhl").write_text("<hashlist/>")  # el legacy más cercano manda entre legacy
+    assert mp.FS().card_for(card / "CLIP") == (card / "CLIP", "legacy")
+    assert mp.FS().card_for(card) == (card, "legacy")
+
+
+def test_card_for_un_listado_por_ancestro(tmp_path, mp, monkeypatch):
+    card = tmp_path / "A001"
+    (card / "ascmhl").mkdir(parents=True)
+    dirs = [card / "CLIP" / f"D{i:03d}" for i in range(50)]
+    for d in dirs:
+        d.mkdir(parents=True)
+    fs = mp.FS()
+    calls = []
+    real = fs.ls
+    monkeypatch.setattr(fs, "ls", lambda d: (calls.append(d), real(d))[1])
+    for _ in range(3):
+        for d in dirs:
+            assert fs.card_for(d) == (card, "asc")
+    assert len(calls) == len(set(calls)) == 50 + 2  # cada carpeta una vez: D000…D049, CLIP y A001
+
+
+# ---------- D11: clips usados frente a los que lista el MHL de origen, y «Tarjeta completa» ----------
+
+def _plan(mp, files, **kw):
+    return mp.build_plan(mp.scan([str(f) for f in files], log=lambda *_: None), camera_only=True, **kw)
+
+
+def test_plan_tarjeta_parcial_y_completa(tmp_path, mp, media):
+    plan = _plan(mp, media["clips"][:1])
+    assert plan["cards"] == {"A001": {"kind": "asc", "used": 1, "total": 3}}
+    assert "[ASC MHL] A001 — 1 de 3 clips (parcial)" in mp.preview_lines(plan)[0]
+    full = _plan(mp, media["clips"][:1], full_cards=True)
+    assert full["cards"] == {"A001": {"kind": "asc", "used": 3, "total": 3}}
+    assert sorted(it["rel"] for it in full["items"]) == [f"A001/CLIP/A001C00{i}.mov" for i in (1, 2, 3)]
+    assert not any("ascmhl" in it["rel"] for it in full["items"])
+    lines = mp.preview_lines(full)
+    assert "[ASC MHL] A001 — 3 de 3 clips" in lines[0] and "parcial" not in lines[0]
+    assert any("resto de la tarjeta  (2 ficheros)" in s for s in lines)
+    job = mp.job_from_plan(full, tmp_path / "dest", False, "t")
+    assert job["full_cards"] is True and job["cards"]["A001"]["used"] == 3
+    assert mp.json.loads(mp.json.dumps(job)) == job
+
+
+def test_plan_total_desconocido_si_el_manifiesto_no_se_entiende(tmp_path, mp):
+    card = tmp_path / "src" / "A001"
+    clip = write_bin(card / "CLIP" / "A001C001.mov", seed=1, size=16)
+    (card / "ascmhl").mkdir()
+    (card / "ascmhl" / "0001_A001_roto.mhl").write_text("<hashlist><hashes><hash>")  # XML a medias
+    plan = _plan(mp, [clip])
+    assert plan["cards"]["A001"] == {"kind": "asc", "used": 1, "total": None}
+    assert mp.preview_lines(plan)[0].strip() == "[ASC MHL] A001 — 1 clips (total desconocido)"
+    assert mp.cards_summary(plan["cards"]) == "A001 1/?"
+    assert mp.cards_summary(plan["cards"], only_partial=True) == ""
+
+
+def test_plan_legacy_cuenta_y_completa_sin_el_mhl(tmp_path, mp):
+    card = tmp_path / "src" / "B001"
+    clips = [write_bin(card / "CLIP" / f"B001C00{i}.mov", seed=i, size=16) for i in (1, 2, 3, 4)]
+    (card / ".DS_Store").write_text("x")
+    entries = "".join(f"<hash><file>CLIP/{c.name}</file><xxhash64be>00</xxhash64be></hash>" for c in clips)
+    (card / "B001.MHL").write_text(f"<hashlist version=\"1.1\">{entries}</hashlist>")
+    plan = _plan(mp, clips[:2])
+    assert plan["cards"]["B001"] == {"kind": "legacy", "used": 2, "total": 4}
+    assert mp.cards_summary(plan["cards"]) == "B001 2/4 (parcial)"
+    full = _plan(mp, clips[:2], full_cards=True)
+    assert sorted(it["rel"] for it in full["items"]) == [f"B001/CLIP/{c.name}" for c in clips]
+    assert full["cards"]["B001"]["used"] == 4
+
+
+def test_mhl_comment_solo_nombra_las_parciales(mp):
+    cards = {"A001": {"kind": "asc", "used": 2, "total": 37}, "B001": {"kind": "asc", "used": 5, "total": 5},
+             "C001": {"kind": "legacy", "used": 1, "total": 12}}
+    assert mp.mhl_comment({"label": "TL", "cards": cards}) == \
+        "MHL MediaManagement: media management TL; parcial: A001 2/37, C001 1/12"
+    assert mp.mhl_comment({"label": "TL", "cards": {"B001": cards["B001"]}}) == "MHL MediaManagement: media management TL"
+    assert mp.cards_summary(cards) == "A001 2/37 (parcial), B001 5/5, C001 1/12 (parcial)"

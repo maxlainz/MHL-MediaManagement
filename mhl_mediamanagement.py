@@ -6,17 +6,18 @@ Flujo:
   1. GUI (Workspace > Scripts > MHL MediaManagement): eliges timelines, destino y si solo media de cámara.
      «Preparar» lee los timelines (sin duplicados) y muestra la vista previa. No crea ningún MHL.
   2. Copia (en segundo plano, con progreso en la ventana): ficheros, conservando la estructura desde la raíz común; las tarjetas
-     con MHL de origen se copian con su MHL tal cual (carpeta ascmhl/ o .mhl legacy).
+     con MHL de origen se copian con su MHL tal cual (carpeta ascmhl/ o .mhl legacy). Por defecto solo los clips de
+     los timelines (tarjeta parcial, avisada); «Tarjeta completa» copia cada tarjeta entera (D11).
   3. Verificación (solo lectura): cada fichero de tarjeta contra su MHL de origen;
      los ficheros sin MHL, origen contra destino.
   4. Solo si TODO cuadra: un ASC MHL de todo el media management en la raíz del destino.
      Según el spec ASC MHL, cada tarjeta con historial recibe una generación "verified"
      que la raíz referencia; las generaciones del DIT no se tocan.
 
-Cámara = fichero dentro de una tarjeta con MHL de origen (ascmhl/ o .mhl en algún ancestro).
+Cámara = fichero dentro de una tarjeta con MHL de origen (ascmhl/ o .mhl en algún ancestro; ascmhl/ gana, D12).
 
 Sin GUI:
-  python3 "MHL MediaManagement.py" --files lista.txt --dest /Volumes/X [--all] [--dry-run]
+  python3 "MHL MediaManagement.py" --files lista.txt --dest /Volumes/X [--all] [--full-cards] [--dry-run]
   python3 "MHL MediaManagement.py" --worker job.json      (lo usa la GUI)
 
 Requisitos: Python ≥ 3.11 con ascmhl 1.2: pip3 install 'ascmhl==1.2' (trae xxhash). Ver install.sh.
@@ -58,7 +59,7 @@ class FS:
     """Lee cada carpeta UNA vez (clave con secuencias de miles de frames en red). H4, H6: ni un stat por fichero."""
 
     def __init__(self):
-        self.listing, self.cards = {}, {}
+        self.listing, self.near, self.mounts, self.totals = {}, {}, {}, {}
 
     def ls(self, d):
         """{nombre: es_carpeta} de la carpeta d (un solo scandir; d_type, sin stat salvo enlaces), o None si no se lee."""
@@ -70,24 +71,73 @@ class FS:
                 self.listing[d] = None
         return self.listing[d]
 
-    def card_for(self, d):
-        """Ancestro más cercano con MHL de origen → (Path, 'asc'|'legacy') o (None, None). No sube por encima de un punto de montaje."""
-        d = str(d)
-        if d in self.cards:
-            return self.cards[d]
-        names = self.ls(d) or {}
-        if names.get("ascmhl"):
-            res = (Path(d), "asc")
-        elif any(n.lower().endswith(".mhl") for n in names):
-            res = (Path(d), "legacy")
-        else:
-            parent = os.path.dirname(d)
-            if not parent or parent == d or os.path.ismount(d):
-                res = (None, None)
+    def _nearest(self, d, kind):
+        """Ancestro más cercano de d (incluida) con MHL de ese tipo, o None. No sube por encima de un punto de montaje.
+        Memorizado por carpeta: una secuencia de 10 000 frames cuesta un listado (y un ismount) por ancestro."""
+        key = (d, kind)
+        if key not in self.near:
+            names = self.ls(d) or {}
+            if names.get("ascmhl") if kind == "asc" else any(n.lower().endswith(".mhl") for n in names):
+                self.near[key] = Path(d)
             else:
-                res = self.card_for(parent)
-        self.cards[d] = res
-        return res
+                parent = os.path.dirname(d)
+                if d not in self.mounts:
+                    self.mounts[d] = os.path.ismount(d)
+                self.near[key] = None if not parent or parent == d or self.mounts[d] else self._nearest(parent, kind)
+        return self.near[key]
+
+    def card_for(self, d):
+        """Tarjeta de la carpeta d → (Path, 'asc'|'legacy') o (None, None). D12: un ascmhl/ en cualquier ancestro (el más
+        cercano) gana sobre un .mhl legacy más cercano; el legacy solo cuenta si no hay ASC MHL por encima."""
+        d = str(d)
+        asc = self._nearest(d, "asc")
+        if asc:
+            return asc, "asc"
+        legacy = self._nearest(d, "legacy")
+        return (legacy, "legacy") if legacy else (None, None)
+
+    def mhl_total(self, card, kind):
+        """Ficheros que lista el MHL de origen de la tarjeta (sin recorrer la tarjeta: nada de stat por fichero en SMB).
+        ASC: rutas distintas de los <hash> de todas las generaciones de ascmhl/ (lo que verifica la referencia);
+        legacy: rutas de los <hash> de los .mhl de la raíz de la tarjeta. None si no se puede leer o interpretar."""
+        key = str(card)
+        if key not in self.totals:
+            d = os.path.join(key, "ascmhl") if kind == "asc" else key
+            names = sorted(n for n in (self.ls(d) or {}) if n.lower().endswith(".mhl"))
+            paths = set()
+            try:
+                if not names:
+                    raise ValueError("sin manifiestos")
+                for n in names:
+                    for el in ET.parse(os.path.join(d, n)).getroot().iter():
+                        if el.tag.rsplit("}", 1)[-1] != "hash":  # ASC lleva namespace (urn:ASC:MHL:v2.0); legacy no
+                            continue
+                        sub = next((c for c in el if c.tag.rsplit("}", 1)[-1] == ("path" if kind == "asc" else "file")),
+                                   None)
+                        if sub is None or not (sub.text or "").strip():
+                            raise ValueError("<hash> sin ruta")
+                        paths.add(sub.text.strip().replace("\\", "/"))
+                self.totals[key] = len(paths)
+            except (ET.ParseError, OSError, ValueError):
+                self.totals[key] = None
+        return self.totals[key]
+
+    def card_files(self, card, kind):
+        """Todos los ficheros de la tarjeta (un listado por carpeta, sin stat): sin ascmhl/, sin .DS_Store, sin las
+        subcarpetas que son otra tarjeta y, en legacy, sin los .mhl de la raíz (la fase 1 los copia aparte)."""
+        out, todo = [], [str(card)]
+        while todo:
+            d = todo.pop()
+            for n, is_dir in sorted((self.ls(d) or {}).items()):
+                p = os.path.join(d, n)
+                if n == ".DS_Store" or (is_dir and n == "ascmhl"):
+                    continue
+                if is_dir:
+                    if self.card_for(p) == (Path(card), kind):
+                        todo.append(p)
+                elif not (kind == "legacy" and d == str(card) and n.lower().endswith(".mhl")):
+                    out.append(Path(p))
+        return sorted(out)
 
 
 def expand(path, fs):
@@ -147,15 +197,25 @@ def scan(raw_paths, log=print):
             if f not in seen:
                 seen.add(f)
                 items.append({"src": f, "card": card, "kind": kind or "none", "group": p})
-    return {"items": items, "missing": missing}
+    return {"items": items, "missing": missing, "fs": fs}
 
 
-def build_plan(scanned, camera_only):
+def build_plan(scanned, camera_only, full_cards=False):
+    """Plan de copia. Con full_cards («Tarjeta completa», D11) cada tarjeta del plan se amplía a todos sus ficheros."""
+    fs = scanned.get("fs") or FS()
     excluded = [it for it in scanned["items"] if camera_only and it["kind"] == "none"]
     items = [dict(it) for it in scanned["items"] if not (camera_only and it["kind"] == "none")]
-    plan = {"base": None, "items": items, "excluded": excluded, "missing": scanned["missing"], "collisions": []}
+    plan = {"base": None, "items": items, "excluded": excluded, "missing": scanned["missing"], "collisions": [],
+            "cards": {}, "full_cards": full_cards}
     if not items:
         return plan
+    if full_cards:
+        have = {it["src"] for it in items}
+        for card, kind in sorted({(it["card"], it["kind"]) for it in items if it["card"]}):
+            for f in fs.card_files(card, kind):
+                if f not in have:
+                    have.add(f)
+                    items.append({"src": f, "card": card, "kind": kind, "group": str(card)})
     cards = {it["card"] for it in items if it["card"]}
     base = Path(os.path.commonpath(sorted({str(it["card"] or it["src"].parent) for it in items})))
     changed = True
@@ -184,6 +244,11 @@ def build_plan(scanned, camera_only):
             if prev != it["card"]:
                 plan["collisions"].append((it["card_rel"], prev, it["card"]))
     plan["base"] = base
+    for it in items:  # D11: clips usados de cada tarjeta frente a los que lista su MHL de origen
+        if it["card"]:
+            c = plan["cards"].setdefault(it["card_rel"], {"kind": it["kind"], "used": 0,
+                                                          "total": fs.mhl_total(it["card"], it["kind"])})
+            c["used"] += 1
     plan["anchors"] = sorted({it["card"] or it["src"].parent for it in items})
     return plan
 
@@ -238,17 +303,48 @@ def plan_counts(plan):
     return n
 
 
+def is_partial(c):
+    return c.get("total") is not None and c["used"] < c["total"]
+
+
+def card_count(c):
+    """«2 de 37 clips (parcial)», «5 de 5 clips» o «2 clips (total desconocido)»."""
+    if c.get("total") is None:
+        return f"{c['used']} clips (total desconocido)"
+    return f"{c['used']} de {c['total']} clips" + (" (parcial)" if is_partial(c) else "")
+
+
+def card_line(card_rel, c):
+    tag = {"asc": "ASC MHL", "legacy": "MHL legacy"}.get(c["kind"], c["kind"])
+    return f"[{tag}] {card_rel} — {card_count(c)}"
+
+
+def cards_summary(cards, only_partial=False):
+    """«A001 2/37 (parcial), B001 5/5» (log y resumen) o, con only_partial, «A001 2/37» (comment del MHL)."""
+    out = []
+    for rel, c in sorted(cards.items()):
+        if only_partial and not is_partial(c):
+            continue
+        t = "?" if c.get("total") is None else c["total"]
+        out.append(f"{rel} {c['used']}/{t}" + (" (parcial)" if is_partial(c) and not only_partial else ""))
+    return ", ".join(out)
+
+
 def preview_lines(plan):
     groups = {}
     for it in plan["items"]:
-        g = groups.setdefault(it["group"], {"kind": it["kind"], "card_rel": it["card_rel"], "n": 0})
+        g = groups.setdefault(it["group"], {"kind": it["kind"], "card_rel": it["card_rel"], "n": 0,
+                                            "rest": bool(it["card"]) and it["group"] == str(it["card"])})
         g["n"] += 1
     lines, last = [], object()
-    for gp, g in sorted(groups.items(), key=lambda kv: (kv[1]["card_rel"] or "~", kv[0])):
+    for gp, g in sorted(groups.items(), key=lambda kv: (kv[1]["card_rel"] or "~", kv[1]["rest"], kv[0])):
         if g["card_rel"] != last:
             last = g["card_rel"]
-            tag = {"asc": "ASC MHL", "legacy": "MHL legacy", "none": "sin MHL"}[g["kind"]]
-            lines.append(f"\n[{tag}] {g['card_rel'] or '—'}")
+            c = plan.get("cards", {}).get(g["card_rel"])
+            lines.append("\n" + (card_line(g["card_rel"], c) if c else "[sin MHL] —"))
+        if g["rest"]:  # Tarjeta completa: lo que no estaba en los timelines
+            lines.append(f"    + resto de la tarjeta  ({g['n']} ficheros)")
+            continue
         rel = os.path.relpath(gp, str(plan["base"]))
         lines.append(f"    {rel}" + (f"  ({g['n']} frames)" if g["n"] > 1 else ""))
     excl = sorted({e["group"] for e in plan["excluded"]})
@@ -264,6 +360,7 @@ def preview_lines(plan):
 def job_from_plan(plan, dest, dry_run, label=""):
     return {
         "dest": str(dest), "base": str(plan["base"]), "dry_run": dry_run, "label": label,
+        "full_cards": bool(plan.get("full_cards")), "cards": plan.get("cards", {}),
         "items": [{"src": str(i["src"]), "rel": i["rel"], "kind": i["kind"],
                    "card": str(i["card"]) if i["card"] else None, "card_rel": i["card_rel"]} for i in plan["items"]],
     }
@@ -538,14 +635,20 @@ def _mhl_dirs(history):
     return out
 
 
+def mhl_comment(job):
+    """comment del MHL raíz; D11: nombra las tarjetas copiadas a medias («; parcial: A001 2/37, C001 1/12»)."""
+    partial = cards_summary(job.get("cards") or {}, only_partial=True)
+    return (f"MHL MediaManagement: media management {job.get('label', '')}".strip()
+            + (f"; parcial: {partial}" if partial else ""))
+
+
 def _commit(session, history, dest, job, log):
     """commit_session sin que SIGTERM lo corte; si falla, deja en el log qué generaciones llegó a escribir."""
     from ascmhl.commands import commit_session
     before = _mhl_dirs(history)
     _COMMITTING[0] = True
     try:
-        commit_session(session, os.environ.get("USER") or None, None, None, None, None,
-                       f"MHL MediaManagement: media management {job.get('label', '')}".strip())
+        commit_session(session, os.environ.get("USER") or None, None, None, None, None, mhl_comment(job))
     except Exception:
         import traceback
         log("\n✗ ERROR escribiendo el MHL\n" + traceback.format_exc())
@@ -600,7 +703,11 @@ def _work(job, dest, dry, log, st):
     N = len(items)
     log(f"MHL MediaManagement {__version__} — {job.get('label', '')}")
     log(f"{N} ficheros · origen (raíz común): {job['base']}")
-    log(f"Destino: {dest}{'   [SIMULACIÓN]' if dry else ''}\n")
+    log(f"Destino: {dest}{'   [SIMULACIÓN]' if dry else ''}")
+    cards_txt = cards_summary(job.get("cards") or {})
+    if cards_txt:  # D11: cuántos clips de cada tarjeta y cuáles van a medias
+        log(f"Tarjetas: {cards_txt}" + ("   [Tarjeta completa]" if job.get("full_cards") else ""))
+    log("")
 
     prog = {"bytes": 0, "t0": time.time()}
 
@@ -777,6 +884,11 @@ def _work(job, dest, dry, log, st):
 
     log("\n================ RESUMEN ================")
     log(f"Copiados/verificados OK: {ok_count}/{N}   Fallos: {len(fails)}   Errores de copia: {len(errors)}")
+    if cards_txt:
+        log(f"Tarjetas: {cards_txt}")
+        if any(is_partial(c) for c in job["cards"].values()):
+            log("  Tarjetas parciales: un verificador externo (ascmhl-debug verify, Silverstack…) dará por «missing» los"
+                " clips que no se han copiado; es cierto. «Tarjeta completa» (--full-cards) copia la tarjeta entera.")
     st.set(force=True, state=state, msg=msg, fails=len(fails))
     return result
 
@@ -964,6 +1076,7 @@ def gui(resolve, bmd):
             ]),
             ui.HGroup({"Weight": 0}, [
                 ui.CheckBox({"ID": "CamOnly", "Text": "Solo media de cámara (con MHL de origen)", "Checked": True}),
+                ui.CheckBox({"ID": "FullCards", "Text": "Tarjeta completa", "Checked": False}),
                 ui.CheckBox({"ID": "DryRun", "Text": "Simulación (no copia)", "Checked": False}),
                 ui.HGap(0, 1),
                 ui.Button({"ID": "Prepare", "Text": "3 · Preparar", "Weight": 0}),
@@ -1003,9 +1116,11 @@ def gui(resolve, bmd):
         if plan is None or state["job"]:
             return
         n = plan_counts(plan)
+        n_partial = sum(is_partial(c) for c in plan["cards"].values())
         itm["Info"].Text = (f"<b>{state['label']}</b> — {len(plan['items'])} ficheros · "
                             f"ASC MHL: {n['asc']} · MHL legacy: {n['legacy']} · sin MHL: {n['none']}"
                             + (f" · <b>excluidos (no cámara): {len(plan['excluded'])}</b>" if plan["excluded"] else "")
+                            + (f" · <b>parciales: {n_partial}</b>" if n_partial else "")
                             + (f" · <font color='#e66'>no encontrados: {len(plan['missing'])}</font>" if plan["missing"] else "")
                             + (f" · {state['skipped']} items sin fichero (títulos, generadores…)" if state["skipped"] else ""))
         itm["Base"].Text = ((f"<b>Raíz común:</b> {plan['base']}"
@@ -1016,7 +1131,7 @@ def gui(resolve, bmd):
         itm["Run"].Enabled = bool(plan["items"])
 
     def set_running(running):
-        for k in ("Prepare", "Browse", "Dest", "Sub", "CamOnly", "DryRun", "TL"):
+        for k in ("Prepare", "Browse", "Dest", "Sub", "CamOnly", "FullCards", "DryRun", "TL"):
             itm[k].Enabled = not running
         itm["Run"].Enabled = (not running) and bool(state["plan"] and state["plan"]["items"])
         itm["Cancel"].Enabled = running
@@ -1038,13 +1153,13 @@ def gui(resolve, bmd):
         print(f"MHL MediaManagement: {len(names)} timelines, {len(paths)} media únicos, escaneo {time.time() - t0:.1f} s")
         state["label"] = ", ".join(names) if len(names) <= 3 else f"{len(names)} timelines"
         state["skipped"] = skipped
-        state["plan"] = build_plan(state["scanned"], itm["CamOnly"].Checked)
+        state["plan"] = build_plan(state["scanned"], itm["CamOnly"].Checked, itm["FullCards"].Checked)
         itm["Progress"].Text = ""
         render()
 
     def toggle(ev):
         if state["scanned"] is not None:
-            state["plan"] = build_plan(state["scanned"], itm["CamOnly"].Checked)
+            state["plan"] = build_plan(state["scanned"], itm["CamOnly"].Checked, itm["FullCards"].Checked)
             render()
 
     def browse(ev):
@@ -1149,6 +1264,7 @@ def gui(resolve, bmd):
     win.On.Browse.Clicked = browse
     win.On.Prepare.Clicked = prepare
     win.On.CamOnly.Clicked = toggle
+    win.On.FullCards.Clicked = toggle
     win.On.Sub.Clicked = lambda ev: render()
     win.On.Run.Clicked = run
     win.On.Cancel.Clicked = cancel
@@ -1193,14 +1309,17 @@ def cli(argv):
     ap.add_argument("--dest", type=Path)
     ap.add_argument("--all", action="store_true", help="incluir ficheros sin MHL de origen")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--full-cards", action="store_true", help="copiar cada tarjeta entera (Tarjeta completa, D11)")
     a = ap.parse_args(argv)
     if a.worker:
         return worker(a.worker, a.status)
     if a.files and a.dest:
         paths = [l.strip() for l in a.files.read_text().splitlines() if l.strip()]
-        plan = build_plan(scan(paths, log=lambda *_: None), camera_only=not a.all)
+        plan = build_plan(scan(paths, log=lambda *_: None), camera_only=not a.all, full_cards=a.full_cards)
         if not plan["items"]:
             print("Nada que copiar."); return 2
+        for rel, c in sorted(plan["cards"].items()):
+            print(card_line(rel, c))
         for e in sorted({e["group"] for e in plan["excluded"]}):
             print(f"excluido (no cámara): {e}")
         for m in plan["missing"]:

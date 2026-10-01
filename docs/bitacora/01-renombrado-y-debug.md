@@ -27,6 +27,10 @@
 ## Vault
 - Ampliadas `MHL (Media Hash List)` (comparación exacta de hashes en la referencia; `append_file_hash` y `action="failed"`) e `Historial ASC MHL anidado` (copia parcial de un hijo → «missing» en `verify`). Escritas al cierre (el servidor se cayó una vez a media sesión y volvió).
 
+## Entrevista de roadmap (misma sesión, después)
+- D9 confirmada. D11 (#2): clips + `ascmhl/` del DIT tal cual + aviso de parcial + casilla «Tarjeta completa». D12 (#3): ASC MHL gana. D13: v0.3.0 inglés → v0.4.0 clips de varios ficheros → v0.5.0 varios destinos (D14: una lectura, N escrituras). D15: nunca en `main`; `main` protegida, PR + CI; hook que bloquea el commit en `main`.
+- D11 y D12 implementadas (92 tests) en la rama `feat/2-tarjeta-parcial`, primer PR del repo. Duda abierta como issue: con «Tarjeta completa», un fichero de la tarjeta que no figure en el MHL del DIT bloquea el MHL.
+
 ## Siguiente paso
-1. Owner: prueba en Resolve (criterio de cierre de #1) y respuesta a #2 (es la que cambia el alcance).
-2. `v0.2.0` (skill `release`).
+1. Owner: prueba en Resolve (criterio de cierre de #1: trabajo completo, reenganche, casilla «Tarjeta completa»).
+2. `v0.2.0` (skill `release`, por PR).

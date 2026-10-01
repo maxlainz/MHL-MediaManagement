@@ -37,7 +37,7 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 
 ## D7 — Git y versiones
 - **Elección**: Conventional Commits en inglés con scope; SemVer; Keep a Changelog en español; sin trailers de atribución (`includeCoAuthoredBy: false`); pull al abrir y push al cerrar por hooks. Primera versión = `v0.1.0`, que se taggea cuando la CI esté verde (no en el arranque).
-- 2026-10-01.
+- 2026-10-01. **Matizada por D15**: ya no se commitea en `main`.
 
 ## D8 — Lint mínimo con dos avisos ignorados hasta el renombrado
 - **Contexto**: ruff encuentra dos avisos en `mhl_pull.py` (`F401`: `shlex` importado sin usar; `F841`: variable `fd` sin usar). En el arranque no se toca código (D2).
@@ -81,6 +81,12 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 ## D14 — Varios destinos: una lectura, N escrituras
 - **Contexto**: D13. Alternativas: destinos en secuencia (el doble de lecturas de red) o decidir tras medir en el NAS.
 - **Elección**: cada fichero se lee del origen una vez y se escribe a todos los destinos a la vez; cada destino tiene su verificación y su `ascmhl/`. Detalle de diseño (hilos, tamaño de bloque, qué pasa si falla un disco) en su propio `Dn` cuando se implemente.
+- 2026-10-01.
+
+## D15 — Nunca en `main`: ramas, PR obligatorio y `main` protegida
+- **Contexto**: hasta ahora se commiteaba directo en `main` (D7 lo permitía hasta `v0.1.0`). El owner quiere la rama bloqueada como norma, desde ya.
+- **Opciones**: desde ahora (D11/D12 ya por rama y PR) o a partir de `v0.2.0`; protección con PR + CI sin revisor, con revisor obligatorio, o solo bloquear force-push.
+- **Elección**: **desde ahora**. `main` protegida en GitHub: PR obligatorio, check `ci` verde y al día con `main`, historial lineal, sin force-push ni borrado, aplicado también a admins; **sin revisor obligatorio** mientras escriba una sola persona (se añadirá cuando entre alguien más). Squash o rebase al mergear; merge commits desactivados; la rama se borra al mergear. El trabajo de D11/D12 es el primer PR (`feat/2-tarjeta-parcial`). Sustituye la frase de D7 «hasta `v0.1.0` se puede commitear directo a `main`».
 - 2026-10-01.
 
 ## Pendiente de decidir (owner)
