@@ -6,6 +6,6 @@
 - **Pruebas**: la GUI solo se puede probar dentro de Resolve (a mano, por el owner o con el MCP de Resolve); el flujo copia → verificación → MHL se prueba por CLI (`--files … --dest …`) y es lo que cubren `make test` y la CI.
 - **Zombis**: los procesos `fuscript` hijos de Resolve que mueren quedan zombis hasta reiniciar Resolve. No se diagnostica un cuelgue sin mirarlo primero.
 - **Rendimiento en SMB**: al preparar se lista cada carpeta **una sola vez** (clase `FS`) y **nunca se hace `stat` por frame**; las secuencias se resuelven con el listado.
-- **Estado y logs**: el estado del trabajo (job, status, stderr) va en `~/Library/Application Support/mhl_pull/` y los logs en `~/Library/Logs/mhl_pull/`. Son los nombres antiguos y quedan pendientes de renombrar en el commit de código del issue #1 (D2); hasta entonces no se cambian.
+- **Estado y logs**: el estado del trabajo (job, status, stderr) va en `~/Library/Application Support/mhl_mediamanagement/` y los logs en `~/Library/Logs/mhl_mediamanagement/`. Las carpetas antiguas `mhl_pull` no se migran.
 
 **Por qué:** cada una de estas cosas ya costó una sesión: un import de terceros rompe el script en el menú de Resolve sin error visible, y una secuencia EXR de 13 056 frames con `stat` por frame colgaba la GUI.

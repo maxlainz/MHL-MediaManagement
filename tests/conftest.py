@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-SCRIPT = REPO / "mhl_pull.py"
+SCRIPT = REPO / "mhl_mediamanagement.py"
 
 
 def _tool(name):
@@ -66,8 +66,8 @@ def media(tmp_path, ascmhl_cli):
 
 @pytest.fixture(scope="session")
 def mp():
-    """mhl_pull.py importado como módulo (sin `resolve`/`bmd` y con __name__ != '__main__' no ejecuta nada)."""
-    spec = importlib.util.spec_from_file_location("mhl_pull", SCRIPT)
+    """mhl_mediamanagement.py importado como módulo (sin `resolve`/`bmd` y con __name__ != '__main__' no ejecuta nada)."""
+    spec = importlib.util.spec_from_file_location("mhl_mediamanagement", SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

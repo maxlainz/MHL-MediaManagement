@@ -7,7 +7,7 @@ setup:        # instala dependencias de desarrollo en .venv (uv sync: ascmhl, py
 	@uv sync
 
 lint:         # ruff sobre el script, tests y scripts (norma ci.md)
-	@uv run ruff check mhl_pull.py tests scripts
+	@uv run ruff check mhl_mediamanagement.py tests scripts
 
 test:         # pytest: prueba de humo del modo CLI sobre fixtures sintéticos
 	@uv run pytest

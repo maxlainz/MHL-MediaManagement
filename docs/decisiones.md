@@ -11,7 +11,7 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 ## D2 — Alcance del renombrado: repo, carpeta y docs ahora; el código después
 - **Contexto**: renombrar el script cambia la entrada de menú en Resolve, las rutas de estado y de logs y el instalador; en el arranque no se toca código.
 - **Opciones**: renombrar todo ya; renombrar solo repo, carpeta y docs y dejar el código para un commit posterior.
-- **Elección**: ahora solo repo, carpeta y docs. El script sigue llamándose `mhl_pull.py`, en Resolve aparece como «MHL Pull», el estado vive en `~/Library/Application Support/mhl_pull/` y los logs en `~/Library/Logs/mhl_pull/`. Renombrar eso es un commit de código posterior (issue #1). En el arranque no se modifican `mhl_pull.py` ni `install.sh`.
+- **Elección** (sustituida por D9 el 2026-10-01 para el código): ahora solo repo, carpeta y docs. El script sigue llamándose `mhl_pull.py`, en Resolve aparece como «MHL Pull», el estado vive en `~/Library/Application Support/mhl_pull/` y los logs en `~/Library/Logs/mhl_pull/`. Renombrar eso es un commit de código posterior (issue #1). En el arranque no se modifican `mhl_pull.py` ni `install.sh`.
 - 2026-10-01.
 
 ## D3 — Repo público en GitHub desde el día 0, licencia MIT
@@ -43,9 +43,20 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - **Contexto**: ruff encuentra dos avisos en `mhl_pull.py` (`F401`: `shlex` importado sin usar; `F841`: variable `fd` sin usar). En el arranque no se toca código (D2).
 - **Opciones**: corregirlos ya; ignorarlos de forma explícita y temporal.
 - **Elección**: ruff con `select = ["E9", "F"]` e ignorados esos dos avisos hasta el commit de código del renombrado; su corrección forma parte del issue #1.
+- 2026-10-01. **Cerrado el 2026-10-01 con D9**: los dos avisos se corrigen y los `ignore` se retiran.
+
+## D9 — Nombres definitivos del script, del menú de Resolve y de las rutas de estado y logs
+- **Contexto**: cierra D2 (issue #1). El owner pidió hacerlo en modo autónomo; se aplicó la recomendación del orquestador y queda abierta a corrección.
+- **Opciones**: `mhl_mediamanagement.py` con menú «MHL MediaManagement» y carpetas `mhl_mediamanagement`; mantener nombres mixtos; migrar las carpetas antiguas `mhl_pull`.
+- **Elección**: fichero `mhl_mediamanagement.py`; en Resolve, Workspace › Scripts › **MHL MediaManagement** (`install.sh` retira el antiguo «MHL Pull.py»); estado en `~/Library/Application Support/mhl_mediamanagement/` y logs en `~/Library/Logs/mhl_mediamanagement/` (`mhl_mediamanagement_<stamp>.log`); sufijo de copia parcial `.mhlmm_part`. Las carpetas antiguas `mhl_pull` **no se migran**: solo contienen estado de trabajos terminados y el owner puede borrarlas a mano.
+- 2026-10-01.
+
+## D10 — `__version__` como constante en el script, sincronizada por test
+- **Contexto**: pendiente desde D1. El script instalado en Resolve vive lejos de `pyproject.toml`, así que leerlo en tiempo de ejecución no es viable.
+- **Opciones**: leer `pyproject.toml` en tiempo de ejecución; constante `__version__` en el script con un test que la compara con `pyproject.toml`.
+- **Elección**: constante `__version__` en el script (se muestra en el título de la ventana y en la cabecera del log); `tests/test_version.py` falla si no coincide con `pyproject.toml`. La skill `release` sube las dos.
 - 2026-10-01.
 
 ## Pendiente de decidir (owner)
 - Si la nota de proyecto `MHL MediaManagement` entra en el vault de Obsidian (área `#archivo`) y cuándo.
-- Nombre definitivo del script y de la entrada de menú en Resolve (issue #1).
-- Si se añade `__version__` al script leyéndolo de `pyproject.toml`.
+- Confirmar o corregir los nombres aplicados en D9 (aplicados sin entrevista, en modo autónomo).

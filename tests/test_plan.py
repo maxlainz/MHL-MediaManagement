@@ -3,7 +3,7 @@ from conftest import write_bin
 
 
 def test_importar_no_ejecuta_nada(mp):
-    assert mp.__name__ == "mhl_pull"
+    assert mp.__name__ == "mhl_mediamanagement"
     assert callable(mp.cli) and callable(mp.build_plan)
 
 

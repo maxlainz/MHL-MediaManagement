@@ -2,9 +2,9 @@
 
 Media management para **DaVinci Resolve** que respeta el **MHL de origen** (el del DIT) y deja un **ASC MHL** de todo lo copiado.
 
-**TL;DR.** Estado: **primera versión**, `v0.1.0` pendiente de tag (cuando la CI esté verde). Dentro de Resolve el script aparece todavía como **«MHL Pull»** y se llama `mhl_pull.py`; el renombrado va en el issue #1. Ver `CHANGELOG.md`, `docs/roadmap.md` y, para trabajar en el repo, `CLAUDE.md`.
+**TL;DR.** Estado: **v0.2.0 pendiente de tag** (renombrado completo, issue #1). El script es `mhl_mediamanagement.py` y en Resolve aparece como **«MHL MediaManagement»**; estado en `~/Library/Application Support/mhl_mediamanagement/` y logs en `~/Library/Logs/mhl_mediamanagement/` (las carpetas antiguas `mhl_pull` no se migran). Ver `CHANGELOG.md`, `docs/roadmap.md` y, para trabajar en el repo, `CLAUDE.md`.
 
-Se lanza desde Resolve: **Workspace › Scripts › MHL Pull**.
+Se lanza desde Resolve: **Workspace › Scripts › MHL MediaManagement**.
 
 ## Flujo
 
@@ -15,7 +15,7 @@ Se lanza desde Resolve: **Workspace › Scripts › MHL Pull**.
 
 *Cámara* = fichero con MHL de origen en algún ancestro.
 
-Cancelar borra el fichero a medias y no crea MHL. Cerrar la ventana no detiene el trabajo; al reabrir, se reengancha. Logs en `~/Library/Logs/mhl_pull/`.
+Cancelar borra el fichero a medias y no crea MHL. Cerrar la ventana no detiene el trabajo; al reabrir, se reengancha. Logs en `~/Library/Logs/mhl_mediamanagement/`.
 
 ## Instalación
 
@@ -29,7 +29,7 @@ Requisitos: Resolve Studio (UIManager), Python 3 de python.org y `ascmhl` (`pip 
 ## Sin GUI
 
 ```bash
-python3 mhl_pull.py --files lista.txt --dest /Volumes/X [--all] [--dry-run]
+python3 mhl_mediamanagement.py --files lista.txt --dest /Volumes/X [--all] [--dry-run]
 ```
 
 `lista.txt`: una ruta por línea (acepta secuencias `clip.[0086400-0086500].exr`). `--all` incluye ficheros sin MHL de origen.

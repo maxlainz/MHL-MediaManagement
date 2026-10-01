@@ -1,13 +1,13 @@
 # MHL MediaManagement
 
-Script único (`mhl_pull.py`) de media management para **DaVinci Resolve Studio**: copia los ficheros de uno o varios timelines respetando el **MHL de origen** del DIT (ASC MHL o `.mhl` legacy), los verifica en solo lectura contra ese MHL y, solo si todo cuadra, deja un **ASC MHL** (xxh64) de todo lo copiado escrito con la librería `ascmhl`. Corre como GUI dentro de Resolve (UIManager, solo stdlib) y como worker/CLI con el Python de `ascmhl`. La implementación de referencia `ascmhl` 1.2 es el oráculo de conformidad.
+Script único (`mhl_mediamanagement.py`) de media management para **DaVinci Resolve Studio**: copia los ficheros de uno o varios timelines respetando el **MHL de origen** del DIT (ASC MHL o `.mhl` legacy), los verifica en solo lectura contra ese MHL y, solo si todo cuadra, deja un **ASC MHL** (xxh64) de todo lo copiado escrito con la librería `ascmhl`. Corre como GUI dentro de Resolve (UIManager, solo stdlib) y como worker/CLI con el Python de `ascmhl`. La implementación de referencia `ascmhl` 1.2 es el oráculo de conformidad.
 
 **Este archivo es el router: lo único que un agente necesita leer para arrancar.** Sin conocimiento de dominio aquí; todo vive en el archivo al que apunta. Se actualiza en cada commit que cambie estructura, estado o comandos. El orden es el de lectura: primero cómo se trabaja (mapa, normas, skills, docs, comandos), y al final el estado, el siguiente paso y lo pendiente del owner.
 
 ## Mapa del repo
 ```
 CLAUDE.md              este router
-mhl_pull.py            el script entero (GUI + worker + CLI); en Resolve aparece como «MHL Pull» (renombrado pendiente, #1)
+mhl_mediamanagement.py el script entero (GUI + worker + CLI); en Resolve, Workspace › Scripts › «MHL MediaManagement»
 install.sh             copia o enlaza el script en Scripts/Utility de Resolve e instala ascmhl
 .claude/rules/         normas (una por archivo)        .claude/skills/   release · obsidian-vault
 .claude/settings.json  hooks: pull + issues al arrancar · bloqueo de rutas al escribir · push al cerrar
@@ -35,7 +35,7 @@ Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
 | `issues-abiertos.md` | Leer `gh issue list` antes de cualquier tarea |
 | `problemas-al-issue.md` | Lo que se encuentra y no se arregla, a issue (sin datos del estudio) |
 | `sin-rutas-absolutas.md` | Sin `/Users/...`, shares ni IPs; hook que bloquea |
-| `ci.md` | Gate local `make ci` (leak-check + lint + test); Actions en Linux; lint mínimo hasta #1 (D4, D8) |
+| `ci.md` | Gate local `make ci` (leak-check + lint + test); Actions en Linux; ruff `E9`+`F` sin ignores (D4, D8) |
 | `obsidian.md` | El vault es la base de conocimiento; conceptos nuevos → nota `#concepto #archivo`; citar notas por título |
 | `vault-accesible.md` | Sin vault que responda no arranca una tarea de dominio; lotes de 3–6 lecturas |
 

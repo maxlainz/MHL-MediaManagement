@@ -33,6 +33,7 @@ def test_copia_verifica_y_crea_mhl(tmp_path, media, ascmhl_debug_cli):
         assert (dest / "A001" / "ascmhl" / gen.name).is_file()
     assert (dest / "ascmhl").is_dir()
     assert len(mhl_files(dest / "ascmhl")) == 1
+    assert not list(dest.rglob("*.mhlmm_part"))
     v = subprocess.run([ascmhl_debug_cli, "verify", str(dest)], capture_output=True, text=True,
                        env=isolated_env(tmp_path))
     assert v.returncode == 0, out(v)

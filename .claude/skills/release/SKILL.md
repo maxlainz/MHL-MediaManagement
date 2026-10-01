@@ -5,7 +5,7 @@ description: Cut a version of MHL MediaManagement - make ci, version bump in pyp
 
 # release
 
-A release is: `version` bumped, changelog, bitácora entry, `CLAUDE.md` updated, vault notes written (rule `obsidian.md`), annotated tag. First version is `v0.1.0`, then plain SemVer (rule `git.md`). There is no Python package to publish and no Docker image: the deliverable is `mhl_pull.py` installed in Resolve with `make install`. In this order:
+A release is: `version` bumped, changelog, bitácora entry, `CLAUDE.md` updated, vault notes written (rule `obsidian.md`), annotated tag. First version is `v0.1.0`, then plain SemVer (rule `git.md`). There is no Python package to publish and no Docker image: the deliverable is `mhl_mediamanagement.py` installed in Resolve with `make install`. In this order:
 
 1. `make ci` green (leak-check + lint + test) and everything committed on `main` (or the PR merged). `gh issue list` read; issues closed by this release referenced in the commit body.
 2. Bump `version` in `pyproject.toml` (single source of truth for the version). Then `uv sync` so `uv.lock` follows.

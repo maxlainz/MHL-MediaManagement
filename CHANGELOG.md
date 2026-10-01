@@ -4,6 +4,13 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado
 
 ## [Unreleased]
 ### Añadido
+- `__version__` en el script (constante sincronizada con `pyproject.toml` por `tests/test_version.py`, D10); se muestra en el título de la ventana y en la cabecera del log.
+
+### Cambiado
+- Renombrado completo del script (issue #1, D9): `mhl_pull.py` → `mhl_mediamanagement.py`; en Resolve, Workspace › Scripts › «MHL MediaManagement» (`install.sh` retira la entrada antigua); estado en `~/Library/Application Support/mhl_mediamanagement/`, logs en `~/Library/Logs/mhl_mediamanagement/`; sufijo de copia parcial `.mhlmm_part`. Las carpetas antiguas `mhl_pull` no se migran.
+- ruff sin `ignore`: corregidos `F401` (`shlex`) y `F841` (`fd`) (cierra D8).
+
+### Añadido (v0.1.0)
 - Primera versión del script (`mhl_pull.py`, en Resolve «MHL Pull»):
   - GUI dentro de Resolve: varios timelines sin duplicados (también entre secuencias solapadas), opción «solo media de cámara» y subcarpeta con el nombre del proyecto.
   - Flujo copia → verificación solo lectura contra el MHL de origen (ASC MHL y MHL 1.x legacy; sin MHL, origen contra destino) → ASC MHL (xxh64) del media management solo si todo cuadra; generación *verified* por tarjeta, las del DIT intactas.

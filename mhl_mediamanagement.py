@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-MHL Pull — media management de uno o varios timelines de DaVinci Resolve respetando el MHL de origen.
+MHL MediaManagement — media management de uno o varios timelines de DaVinci Resolve respetando el MHL de origen.
 
 Flujo:
-  1. GUI (Workspace > Scripts > MHL Pull): eliges timelines, destino y si solo media de cámara.
+  1. GUI (Workspace > Scripts > MHL MediaManagement): eliges timelines, destino y si solo media de cámara.
      «Preparar» lee los timelines (sin duplicados) y muestra la vista previa. No crea ningún MHL.
   2. Copia (en segundo plano, con progreso en la ventana): ficheros, conservando la estructura desde la raíz común; las tarjetas
      con MHL de origen se copian con su MHL tal cual (carpeta ascmhl/ o .mhl legacy).
@@ -16,8 +16,8 @@ Flujo:
 Cámara = fichero dentro de una tarjeta con MHL de origen (ascmhl/ o .mhl en algún ancestro).
 
 Sin GUI:
-  python3 "MHL Pull.py" --files lista.txt --dest /Volumes/X [--all] [--dry-run]
-  python3 "MHL Pull.py" --worker job.json      (lo usa la GUI)
+  python3 "MHL MediaManagement.py" --files lista.txt --dest /Volumes/X [--all] [--dry-run]
+  python3 "MHL MediaManagement.py" --worker job.json      (lo usa la GUI)
 
 Requisitos: `pip3 install ascmhl` (trae xxhash). Ver install.sh.
 """
@@ -26,7 +26,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -34,9 +33,11 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-INSTALL_PATH = Path.home() / "Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/MHL Pull.py"
-WORK_DIR = Path.home() / "Library/Application Support/mhl_pull"
-LOG_DIR = Path.home() / "Library/Logs/mhl_pull"
+__version__ = "0.2.0"
+
+INSTALL_PATH = Path.home() / "Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/MHL MediaManagement.py"
+WORK_DIR = Path.home() / "Library/Application Support/mhl_mediamanagement"
+LOG_DIR = Path.home() / "Library/Logs/mhl_mediamanagement"
 ROOT_HASH = "xxh64"
 SEQ_RE = re.compile(r"\[(\d+)-(\d+)\]")
 ASCMHL_CANDIDATES = ["/opt/homebrew/bin/ascmhl", "/usr/local/bin/ascmhl"] + sorted(
@@ -121,7 +122,7 @@ def timeline_paths(tl):
 def scan(raw_paths, log=print):
     fs, items, missing, seen = FS(), [], [], set()
     for n, p in enumerate(raw_paths, 1):
-        log(f"MHL Pull: [{n}/{len(raw_paths)}] {p}")
+        log(f"MHL MediaManagement: [{n}/{len(raw_paths)}] {p}")
         files = expand(p, fs)
         if not files:
             missing.append(p)
@@ -314,7 +315,7 @@ def copy_file(src, dst, on_bytes=None):
         if on_bytes:
             on_bytes(s.st_size)
         return False, s.st_size
-    tmp = dst.with_name(dst.name + ".mhlpull_part")
+    tmp = dst.with_name(dst.name + ".mhlmm_part")
     _CURRENT_TMP[0] = tmp
     with open(src, "rb") as fi, open(tmp, "wb") as fo:
         for chunk in iter(lambda: fi.read(CHUNK), b""):
@@ -332,7 +333,7 @@ def worker(job_path, status_path=None):
     job = json.loads(Path(job_path).read_text())
     dest, dry = Path(job["dest"]), job["dry_run"]
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logf = open(job.get("log") or LOG_DIR / f"mhl_pull_{time.strftime('%Y%m%d_%H%M%S')}.log", "w")
+    logf = open(job.get("log") or LOG_DIR / f"mhl_mediamanagement_{time.strftime('%Y%m%d_%H%M%S')}.log", "w")
     st = Status(status_path)
 
     def log(s=""):
@@ -362,7 +363,7 @@ def worker(job_path, status_path=None):
 def _work(job, dest, dry, log, st):
     items = job["items"]
     N = len(items)
-    log(f"MHL Pull — {job.get('label', '')}")
+    log(f"MHL MediaManagement {__version__} — {job.get('label', '')}")
     log(f"{N} ficheros · origen (raíz común): {job['base']}")
     log(f"Destino: {dest}{'   [SIMULACIÓN]' if dry else ''}\n")
 
@@ -486,7 +487,7 @@ def _work(job, dest, dry, log, st):
             for fmt, h in rec.items():
                 session.append_file_hash(path, size, mtime, fmt, h)
         commit_session(session, os.environ.get("USER", ""), None, None, None, None,
-                       f"MHL Pull: media management {job.get('label', '')}".strip())
+                       f"MHL MediaManagement: media management {job.get('label', '')}".strip())
         log(f"✓ ASC MHL creado en {dest}/ascmhl/ ({len(records)} ficheros, {ROOT_HASH})")
         result, state = 0, "done"
         msg = f"✓ {ok_count}/{N} verificados · ASC MHL creado"
@@ -516,7 +517,7 @@ def launch_worker(job):
     stamp = time.strftime('%Y%m%d_%H%M%S')
     jp = WORK_DIR / f"job_{stamp}.json"
     sp = WORK_DIR / f"status_{stamp}.json"
-    job["log"] = str(LOG_DIR / f"mhl_pull_{stamp}.log")
+    job["log"] = str(LOG_DIR / f"mhl_mediamanagement_{stamp}.log")
     jp.write_text(json.dumps(job, indent=1))
     me = globals().get("__file__")
     script = me if me and os.path.exists(me) else str(INSTALL_PATH)
@@ -536,7 +537,7 @@ def find_running_job():
                 os.kill(int(d["pid"]), 0)
                 stamp = sp.stem.replace("status_", "")
                 return {"pid": int(d["pid"]), "proc": None, "status": str(sp),
-                        "log": str(LOG_DIR / f"mhl_pull_{stamp}.log")}
+                        "log": str(LOG_DIR / f"mhl_mediamanagement_{stamp}.log")}
         except (OSError, ValueError, KeyError):
             continue
     return None
@@ -551,7 +552,7 @@ def gui(resolve, bmd):
     state = {"plan": None, "scanned": None, "label": "", "skipped": 0, "job": None, "log_size": -1}
 
     win = disp.AddWindow(
-        {"ID": "MHLPull", "WindowTitle": "MHL Pull — media management con MHL", "Geometry": [200, 100, 900, 760]},
+        {"ID": "MHLMM", "WindowTitle": f"MHL MediaManagement {__version__} — media management con MHL", "Geometry": [200, 100, 900, 760]},
         ui.VGroup({"Spacing": 6}, [
             ui.Label({"Text": "<b>1 · Timelines</b> (selección múltiple con ⌘/⇧)", "Weight": 0}),
             ui.Tree({"ID": "TL", "SelectionMode": "ExtendedSelection", "HeaderHidden": True,
@@ -642,7 +643,7 @@ def gui(resolve, bmd):
             paths |= p; skipped += s; names.append(tl.GetName())
         t0 = time.time()
         state["scanned"] = scan(sorted(paths), log=lambda *_: None)
-        print(f"MHL Pull: {len(names)} timelines, {len(paths)} media únicos, escaneo {time.time() - t0:.1f} s")
+        print(f"MHL MediaManagement: {len(names)} timelines, {len(paths)} media únicos, escaneo {time.time() - t0:.1f} s")
         state["label"] = ", ".join(names) if len(names) <= 3 else f"{len(names)} timelines"
         state["skipped"] = skipped
         state["plan"] = build_plan(state["scanned"], itm["CamOnly"].Checked)
@@ -711,7 +712,7 @@ def gui(resolve, bmd):
             set_running(False)
 
     def run(ev):
-        plan, fd = state["plan"], final_dest()
+        plan = state["plan"]
         if not plan or not plan["items"]:
             itm["Status"].Text = "Nada que copiar. Pulsa Preparar."; return
         base_dest = itm["Dest"].Text.strip()
@@ -743,7 +744,7 @@ def gui(resolve, bmd):
             except OSError:
                 pass
 
-    win.On.MHLPull.Close = lambda ev: disp.ExitLoop()
+    win.On.MHLMM.Close = lambda ev: disp.ExitLoop()
     win.On.Close.Clicked = lambda ev: disp.ExitLoop()
     win.On.Browse.Clicked = browse
     win.On.Prepare.Clicked = prepare
@@ -775,8 +776,8 @@ def gui(resolve, bmd):
         timer.Stop()
     win.Hide()
     if state["job"]:
-        print("MHL Pull: la ventana se ha cerrado pero el trabajo sigue en segundo plano; "
-              "al reabrir MHL Pull se muestra su progreso.")
+        print("MHL MediaManagement: la ventana se ha cerrado pero el trabajo sigue en segundo plano; "
+              "al reabrir MHL MediaManagement se muestra su progreso.")
 
 
 # ======================================================================
@@ -807,7 +808,7 @@ def cli(argv):
         why = dest_conflict(plan, a.dest.resolve())
         if why:
             print(why); return 2
-        jp = Path(os.environ.get("TMPDIR", "/tmp")) / f"mhl_pull_job_{os.getpid()}.json"
+        jp = Path(os.environ.get("TMPDIR", "/tmp")) / f"mhl_mediamanagement_job_{os.getpid()}.json"
         jp.write_text(json.dumps(job_from_plan(plan, a.dest.resolve(), a.dry_run, a.files.name)))
         return worker(jp)
     ap.print_help(); return 2
@@ -825,11 +826,11 @@ def _resolve_handles():
 _r, _b = _resolve_handles()
 if _r is not None:
     # Lanzado desde Resolve (Workspace > Scripts): __name__ no siempre es "__main__"
-    print("MHL Pull: abriendo ventana…")
+    print("MHL MediaManagement: abriendo ventana…")
     try:
         gui(_r, _b)
     except Exception:
         import traceback
-        print("MHL Pull: ERROR\n" + traceback.format_exc())
+        print("MHL MediaManagement: ERROR\n" + traceback.format_exc())
 elif __name__ == "__main__":
     sys.exit(cli(getattr(sys, "argv", [])[1:]))

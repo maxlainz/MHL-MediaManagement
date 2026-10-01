@@ -1,11 +1,11 @@
 # Arquitectura
 
-Cómo está hecho `mhl_pull.py` hoy (primera versión, antes de `v0.1.0`). Fuente de verdad para quien toque el código. Decisiones en `docs/decisiones.md`. Se actualiza cuando cambia un contrato.
+Cómo está hecho `mhl_mediamanagement.py` hoy (primera versión, antes de `v0.1.0`). Fuente de verdad para quien toque el código. Decisiones en `docs/decisiones.md`. Se actualiza cuando cambia un contrato.
 
 ## Un script, dos modos
 | Modo | Quién lo lanza | Intérprete | Dependencias |
 |---|---|---|---|
-| **GUI** | Resolve, desde Workspace › Scripts › MHL Pull (UIManager) | el Python de Resolve | solo stdlib |
+| **GUI** | Resolve, desde Workspace › Scripts › MHL MediaManagement (UIManager) | el Python de Resolve | solo stdlib |
 | **Worker** | la GUI (o el modo CLI) con `--worker job.json --status status.json` | el Python del propio `ascmhl` (se lee de su shebang, `python_for`) | `ascmhl` 1.2 y `xxhash` |
 
 - Detección de Resolve: `_resolve_handles()` busca los globales `resolve`/`bmd`. Lanzado desde el menú, `__name__` **no** es `"__main__"`, así que la GUI no puede depender de ese test. Si no hay Resolve y `__name__ == "__main__"`, entra `cli()`.
@@ -39,7 +39,7 @@ Cómo está hecho `mhl_pull.py` hoy (primera versión, antes de `v0.1.0`). Fuent
 |---|---|
 | `worker(job_path, status_path)` | Abre el log, crea el `Status`, instala el manejador de SIGTERM (borra el fichero a medias, marca `cancelled`, sale con 130) y llama a `_work`. Una excepción no prevista → `failed` con traza en el log. |
 | `Status` | Escribe el estado (`state`, `phase`, `n/total`, bytes, velocidad, fichero, fallos, mensaje) en JSON de forma atómica (`.tmp` + `os.replace`), como mucho cada 0,3 s salvo `force`. |
-| `copy_file(src, dst)` | Copia por bloques de 32 MiB a `*.mhlpull_part` y renombra; conserva fechas (`copystat`). Si el destino ya existe con el mismo tamaño, no copia (relanzado). |
+| `copy_file(src, dst)` | Copia por bloques de 32 MiB a `*.mhlmm_part` y renombra; conserva fechas (`copystat`). Si el destino ya existe con el mismo tamaño, no copia (relanzado). |
 | `_work(job, …)` | **1 · Copia** de ficheros y de los MHL de origen de cada tarjeta (`ascmhl/` entero o los `*.mhl` legacy). **2 · Verificación** solo lectura (ver abajo). **3 · MHL**: solo si no hay fallos ni errores de copia, una `MHLGenerationCreationSession` sobre `DEST` con `append_file_hash` por formato y `commit_session`. |
 | `hash_file(path, formats)` | Una sola lectura calcula todos los formatos pedidos. |
 | `legacy_hashes(card)` | Lee los `*.mhl` 1.x de la tarjeta → `{ruta: (algoritmo, hash)}`, en orden de preferencia `xxhash64be`, `xxhash64`, `md5`, `sha1`, `xxhash`. |
@@ -62,12 +62,12 @@ Cómo está hecho `mhl_pull.py` hoy (primera versión, antes de `v0.1.0`). Fuent
 ## Ficheros de estado
 | Ruta | Contenido |
 |---|---|
-| `~/Library/Application Support/mhl_pull/job_<stamp>.json` | El trabajo (destino, raíz, simulación, etiqueta, items, ruta del log). |
-| `~/Library/Application Support/mhl_pull/status_<stamp>.json` | Estado vivo que escribe el worker y lee la GUI. |
-| `~/Library/Application Support/mhl_pull/stderr_<stamp>.txt` | Salida de error del worker. |
-| `~/Library/Logs/mhl_pull/mhl_pull_<stamp>.log` | Log completo del trabajo. |
+| `~/Library/Application Support/mhl_mediamanagement/job_<stamp>.json` | El trabajo (destino, raíz, simulación, etiqueta, items, ruta del log). |
+| `~/Library/Application Support/mhl_mediamanagement/status_<stamp>.json` | Estado vivo que escribe el worker y lee la GUI. |
+| `~/Library/Application Support/mhl_mediamanagement/stderr_<stamp>.txt` | Salida de error del worker. |
+| `~/Library/Logs/mhl_mediamanagement/mhl_mediamanagement_<stamp>.log` | Log completo del trabajo. |
 
-En modo CLI el `job` va a `$TMPDIR` y no hay `status`. Los nombres `mhl_pull` se mantienen hasta el renombrado (D2, issue #1).
+En modo CLI el `job` va a `$TMPDIR` y no hay `status`. Las carpetas antiguas `mhl_pull` (estado y logs de versiones previas) no se migran: se ignoran.
 
 ## Hallazgos heredados de la primera versión
 Vienen de la primera versión del script, anterior al repo. No hay comando de reproducción registrado salvo donde se indica.

@@ -8,7 +8,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 # Estado de ejecución del script (nunca se versiona)
-*.mhlpull_part
+*.mhlmm_part
 # Material del owner / del estudio (repo público: ver .claude/rules/repo-publico.md)
 scripts/leak-patterns.local.txt
 samples/*

@@ -1,6 +1,6 @@
 [project]
 name = "mhl-mediamanagement"
-version = "0.1.0"
+version = "0.2.0"
 description = "Media management for DaVinci Resolve that honours the DIT's source MHL and writes an ASC MHL of everything copied"
 readme = "README.md"
 license = "MIT"
@@ -27,9 +27,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E9", "F"]
-# D8: avisos actuales de mhl_pull.py (F401 shlex sin usar, F841 variable fd); no se toca código en el arranque.
-# Se retiran en el issue #1 (commit de código del renombrado).
-ignore = ["F401", "F841"]
+# D8 cerrado en el issue #1: sin ignores.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
