@@ -138,7 +138,7 @@ def test_commit_fallido_informa_de_generaciones_huerfanas(tmp_path, mp, media):
 
 def test_worker_sin_ascmhl_no_copia_nada(tmp_path, mp, media, monkeypatch, work_dirs):
     dest = tmp_path / "dest"
-    plan = mp.build_plan(mp.scan([str(c) for c in media["clips"]], log=lambda *_: None), True)
+    plan = mp.build_plan(mp.scan([str(c) for c in media["clips"]], log=lambda *_: None), "clips")
     jp, sp, lp = tmp_path / "job.json", tmp_path / "status.json", tmp_path / "worker.log"
     jp.write_text(json.dumps({**mp.job_from_plan(plan, dest, False, "t"), "log": str(lp)}))
     real = builtins.__import__
@@ -193,7 +193,7 @@ def test_sigterm_borra_la_carpeta_ascmhl_a_medias(tmp_path, mp, monkeypatch):
     assert not part.exists()
 
 
-# ---------- D11: tarjeta parcial avisada y «Tarjeta completa» ----------
+# ---------- D11/D16: tarjeta parcial avisada y «Respetar historial MHL» ----------
 
 def root_manifest(dest):
     return (dest / "ascmhl" / mhl_files(dest / "ascmhl")[-1]).read_text()
@@ -212,9 +212,9 @@ def test_tarjeta_parcial_avisa_y_verify_da_missing(tmp_path, media, ascmhl_debug
     assert v.returncode == 10, out(v)
 
 
-def test_tarjeta_completa_verifica_limpio(tmp_path, media, ascmhl_debug_cli):
+def test_respetar_historial_verifica_limpio(tmp_path, media, ascmhl_debug_cli):
     dest = tmp_path / "dest"
-    r = run_pull(tmp_path, media["clips"][:1], dest, "--full-cards")
+    r = run_pull(tmp_path, media["clips"][:1], dest, "--scope", "mhl")
     assert r.returncode == 0, out(r)
     assert "[ASC MHL] A001 — 3 de 3 clips" in out(r) and "parcial" not in out(r)
     for c in media["clips"]:
@@ -224,10 +224,10 @@ def test_tarjeta_completa_verifica_limpio(tmp_path, media, ascmhl_debug_cli):
     assert v.returncode == 0, out(v)
 
 
-def test_tarjeta_completa_legacy_no_duplica_el_mhl(tmp_path, ascmhl_debug_cli):
+def test_respetar_historial_legacy_no_duplica_el_mhl(tmp_path, ascmhl_debug_cli):
     card, clips = legacy_card(tmp_path, "B001.mhl")
     dest = tmp_path / "dest"
-    r = run_pull(tmp_path, clips[:1], dest, "--full-cards")
+    r = run_pull(tmp_path, clips[:1], dest, "--scope", "mhl")
     assert r.returncode == 0, out(r)
     assert "[MHL legacy] B001 — 2 de 2 clips" in out(r)
     assert "2 ficheros" in out(r)  # items: los 2 clips; el .mhl va aparte (fase 1)
@@ -248,7 +248,7 @@ def test_mhl_legacy_suelto_en_tarjeta_asc(tmp_path, ascmhl_cli, ascmhl_debug_cli
                        env=isolated_env(tmp_path))
     assert r.returncode == 0, out(r)
     dest = tmp_path / "dest"
-    r = run_pull(tmp_path, clips[:1], dest, "--full-cards")
+    r = run_pull(tmp_path, clips[:1], dest, "--scope", "mhl")
     assert r.returncode == 0, out(r)
     assert "[ASC MHL] A001 — 3 de 3 clips" in out(r) and "[MHL legacy]" not in out(r)
     assert (dest / "A001" / "ascmhl").is_dir() and (dest / "A001" / "CLIP" / "old.mhl").is_file()
