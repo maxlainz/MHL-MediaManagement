@@ -11,10 +11,10 @@ mhl_mediamanagement.py el script entero (GUI + worker + CLI); en Resolve, Worksp
 install.sh             copia o enlaza el script en Scripts/Utility de Resolve e instala ascmhl
 .claude/rules/         normas (una por archivo)        .claude/skills/   release · obsidian-vault
 .claude/settings.json  hooks: pull + issues al arrancar · bloqueo de rutas al escribir · push al cerrar
-docs/decisiones.md     ADRs D1–Dn                      docs/bitacora/    una entrada por sesión (NN-slug.md)
-docs/arquitectura.md   cómo está hecho el script; hallazgos heredados H1–H5
+docs/decisiones.md     ADRs D1–Dn                      docs/bitacora/    una entrada por sesión (00-arranque, 01-renombrado-y-debug)
+docs/arquitectura.md   cómo está hecho el script; hallazgos H1–H9
 docs/contexto-estudio.md  qué exige el estudio, en genérico   docs/roadmap.md  versiones previstas
-tests/                 pytest: prueba de humo del modo CLI sobre fixtures sintéticos + unitarios del plan
+tests/                 pytest (81): humo del modo CLI, plan, worker/conformidad, lanzamiento/reenganche, versión
 .github/workflows/     ci.yml (push a main y PRs)      pyproject.toml · uv.lock · .python-version
 scripts/leak-check.sh  nada del estudio en el repo     scripts/leak-patterns.local.txt  patrones privados (gitignored)
 Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
@@ -48,8 +48,8 @@ Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
 ## Docs
 | Archivo | Leer cuando… |
 |---|---|
-| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D8; pendientes del owner al final) |
-| `docs/arquitectura.md` | Vas a tocar cualquier función del script, el worker, el estado o los hashes; hallazgos H1–H5 |
+| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D10; pendientes del owner al final) |
+| `docs/arquitectura.md` | Vas a tocar cualquier función del script, el worker, el estado o los hashes; hallazgos H1–H9 |
 | `docs/contexto-estudio.md` | Necesitas saber qué exige el estudio del media management y del MHL |
 | `docs/roadmap.md` | Dudas de qué entra en cada versión |
 | `docs/bitacora/` | Quieres saber qué pasó en cada sesión |
@@ -73,10 +73,12 @@ Requisitos: `uv`, Python ≥ 3.11 (CI usa 3.12). Para la GUI: Resolve Studio y P
 ASC MHL Specification v1.0 (2022-03-15) e Implementation Guidelines v1.0 (2023-03-29), `ascmitc/mhl-specification` · `ascmhl` **1.2** (PyPI 2025-07-04, Python ≥ 3.11, MIT). Subir versión es decisión del owner.
 
 ## Estado y siguiente paso
-- **Estado (2026-10-01, bitácora 00)**: primera versión funcional del script (GUI en Resolve, varios timelines, copia → verificación → ASC MHL). Repo puesto a punto con el método de la familia: normas, hooks, docs, CI con prueba de humo del modo CLI. Publicado como `maxlainz/MHL-MediaManagement`. Sin tag aún.
-- **Después**: CI verde en GitHub → tag `v0.1.0` (skill `release`). Luego issue #1: renombrar script, entrada de menú de Resolve y rutas de estado/logs; retirar los dos `ignore` de ruff.
+- **Estado (2026-10-01, bitácora 01)**: issue #1 implementado (script `mhl_mediamanagement.py`, menú «MHL MediaManagement», carpetas nuevas, `__version__` 0.2.0, ruff sin ignores; D9, D10). Revisión adversarial con subagentes: 24 fallos corregidos en tres commits (destino que pisaba el origen o el `ascmhl/` del DIT, intérprete `/bin/sh`, manifiestos con `action="failed"`, reenganche a PID ajeno, `stat` por clip…), 81 tests. Hallazgos H6–H9 en `docs/arquitectura.md`. Sin tag.
+- **Después**: el owner prueba «MHL MediaManagement» en Resolve (ya enlazado; criterio de cierre de #1) y responde #2 (tarjeta parcial: cambia el alcance) → `v0.2.0` (skill `release`). Issues #3–#7 son decisiones y comprobaciones del owner.
 
 ## Pendiente del owner (2026-10-01)
+- Confirmar o corregir los nombres de D9 (aplicados en modo autónomo).
+- Probar la versión en Resolve (#1) y las comprobaciones de #7; decidir #2 (recomendación: copiar la tarjeta entera) y #3.
 - Decidir si crea la nota de proyecto `MHL MediaManagement` en el vault (área `#archivo`).
 - Resumir en `docs/contexto-estudio.md`, en genérico, la política de MHL del estudio (documento interno).
 - Mantener `scripts/leak-patterns.local.txt` con el nombre del estudio y de clientes.
