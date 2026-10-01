@@ -46,7 +46,7 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - 2026-10-01. **Cerrado el 2026-10-01 con D9**: los dos avisos se corrigen y los `ignore` se retiran.
 
 ## D9 — Nombres definitivos del script, del menú de Resolve y de las rutas de estado y logs
-- **Contexto**: cierra D2 (issue #1). El owner pidió hacerlo en modo autónomo; se aplicó la recomendación del orquestador y queda abierta a corrección.
+- **Contexto**: cierra D2 (issue #1). El owner pidió hacerlo en modo autónomo; se aplicó la recomendación del orquestador. **Confirmada por el owner en la entrevista del 2026-10-01.**
 - **Opciones**: `mhl_mediamanagement.py` con menú «MHL MediaManagement» y carpetas `mhl_mediamanagement`; mantener nombres mixtos; migrar las carpetas antiguas `mhl_pull`.
 - **Elección**: fichero `mhl_mediamanagement.py`; en Resolve, Workspace › Scripts › **MHL MediaManagement** (`install.sh` retira el antiguo «MHL Pull.py»); estado en `~/Library/Application Support/mhl_mediamanagement/` y logs en `~/Library/Logs/mhl_mediamanagement/` (`mhl_mediamanagement_<stamp>.log`); sufijo de copia parcial `.mhlmm_part`. Las carpetas antiguas `mhl_pull` **no se migran**: solo contienen estado de trabajos terminados y el owner puede borrarlas a mano.
 - 2026-10-01.
@@ -57,6 +57,31 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - **Elección**: constante `__version__` en el script (se muestra en el título de la ventana y en la cabecera del log); `tests/test_version.py` falla si no coincide con `pyproject.toml`. La skill `release` sube las dos.
 - 2026-10-01.
 
+## D11 — Tarjeta parcial: solo los clips del timeline, con el `ascmhl/` del DIT tal cual, y casilla «Tarjeta completa»
+- **Contexto**: issue #2 / H8. Un timeline usa pocos clips de una tarjeta; si se copia el `ascmhl/` del DIT entero, un verificador externo avisa «faltan N ficheros». Si no se copia, se pierde el historial del DIT.
+- **Opciones**: tarjeta entera siempre; solo clips sin `ascmhl/` del DIT (hashes del DIT como `verified` en la raíz); solo clips con `ascmhl/` del DIT tal cual e informar; casilla.
+- **Elección**: por defecto **solo los clips del timeline + el `ascmhl/` del DIT tal cual** (es el historial; para eso se creó) + **aviso de parcial** en la vista previa («[ASC MHL] A001 — 2 de 37 clips»), en el log, en el resumen y en el `comment` del manifiesto raíz («parcial: A001 2/37»). Casilla **«Tarjeta completa», desmarcada por defecto**: marcada, se copia la tarjeta entera y el destino verifica limpio (entregas a terceros). Se documenta en el README que con una tarjeta parcial `verify` avisa de ficheros que faltan, y que eso es cierto.
+- 2026-10-01.
+
+## D12 — Si hay ASC MHL en un ancestro, gana sobre un `.mhl` legacy más cercano
+- **Contexto**: issue #3. Un `.mhl` olvidado en una subcarpeta de una tarjeta con `ascmhl/` tapaba el ASC MHL y bloqueaba el trabajo.
+- **Opciones**: ASC siempre gana; gana el que cite el fichero; dejarlo.
+- **Elección**: `card_for` busca `ascmhl/` en todos los ancestros (hasta el punto de montaje) primero; el `.mhl` legacy solo cuenta si no hay ASC MHL por encima.
+- 2026-10-01.
+
+## D13 — Roadmap: v0.2.0 con D11/D12 probada en Resolve → v0.3.0 inglés → v0.4.0 clips de varios ficheros → v0.5.0 varios destinos
+- **Contexto**: entrevista de roadmap del 2026-10-01. El owner no prioriza la medida en el NAS como versión; se hace cuando toque (norma `prediccion-antes-de-medir.md`), y el modo «solo verificar» no entra por ahora.
+- **Elección**:
+  - **v0.2.0**: renombrado (#1), correcciones de la revisión, D11 y D12. Se taggea tras la prueba del owner en Resolve.
+  - **v0.3.0 — inglés**: ventana, log, mensajes y el `comment` del MHL en inglés. Docs del repo, normas, decisiones, bitácora y vault siguen en español (método de la familia). Tests ajustados.
+  - **v0.4.0 — clips de varios ficheros** (#5): R3D por segmentos, P2/XDCAM, sidecars de BRAW/Canon, clips compuestos/multicam. Primero la comprobación en Resolve de qué devuelve `File Path`.
+  - **v0.5.0 — varios destinos**: leer el origen una vez y escribir a N discos a la vez (como Hedge/Silverstack); verificación y ASC MHL por destino.
+- 2026-10-01.
+
+## D14 — Varios destinos: una lectura, N escrituras
+- **Contexto**: D13. Alternativas: destinos en secuencia (el doble de lecturas de red) o decidir tras medir en el NAS.
+- **Elección**: cada fichero se lee del origen una vez y se escribe a todos los destinos a la vez; cada destino tiene su verificación y su `ascmhl/`. Detalle de diseño (hilos, tamaño de bloque, qué pasa si falla un disco) en su propio `Dn` cuando se implemente.
+- 2026-10-01.
+
 ## Pendiente de decidir (owner)
 - Si la nota de proyecto `MHL MediaManagement` entra en el vault de Obsidian (área `#archivo`) y cuándo.
-- Confirmar o corregir los nombres aplicados en D9 (aplicados sin entrevista, en modo autónomo).

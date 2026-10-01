@@ -16,6 +16,9 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado
 - Renombrado completo del script (issue #1, D9): `mhl_pull.py` → `mhl_mediamanagement.py`; en Resolve, Workspace › Scripts › «MHL MediaManagement» (`install.sh` retira la entrada antigua); estado en `~/Library/Application Support/mhl_mediamanagement/`, logs en `~/Library/Logs/mhl_mediamanagement/`; sufijo de copia parcial `.mhlmm_part`. Las carpetas antiguas `mhl_pull` no se migran.
 - ruff sin `ignore`: corregidos `F401` (`shlex`) y `F841` (`fd`) (cierra D8).
 
+### Decidido
+- D9 confirmada por el owner; D11 (tarjeta parcial: clips + `ascmhl/` del DIT tal cual + aviso; casilla «Tarjeta completa»); D12 (ASC MHL gana sobre un `.mhl` legacy más cercano); D13 (roadmap: v0.3.0 inglés, v0.4.0 clips de varios ficheros, v0.5.0 varios destinos); D14 (varios destinos: una lectura, N escrituras).
+
 ### Añadido (v0.1.0)
 - Primera versión del script (`mhl_pull.py`, en Resolve «MHL Pull»):
   - GUI dentro de Resolve: varios timelines sin duplicados (también entre secuencias solapadas), opción «solo media de cámara» y subcarpeta con el nombre del proyecto.

@@ -48,7 +48,7 @@ Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
 ## Docs
 | Archivo | Leer cuando… |
 |---|---|
-| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D10; pendientes del owner al final) |
+| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D14; pendientes del owner al final) |
 | `docs/arquitectura.md` | Vas a tocar cualquier función del script, el worker, el estado o los hashes; hallazgos H1–H9 |
 | `docs/contexto-estudio.md` | Necesitas saber qué exige el estudio del media management y del MHL |
 | `docs/roadmap.md` | Dudas de qué entra en cada versión |
@@ -74,11 +74,10 @@ ASC MHL Specification v1.0 (2022-03-15) e Implementation Guidelines v1.0 (2023-0
 
 ## Estado y siguiente paso
 - **Estado (2026-10-01, bitácora 01)**: issue #1 implementado (script `mhl_mediamanagement.py`, menú «MHL MediaManagement», carpetas nuevas, `__version__` 0.2.0, ruff sin ignores; D9, D10). Revisión adversarial con subagentes: 24 fallos corregidos en tres commits (destino que pisaba el origen o el `ascmhl/` del DIT, intérprete `/bin/sh`, manifiestos con `action="failed"`, reenganche a PID ajeno, `stat` por clip…), 81 tests. Hallazgos H6–H9 en `docs/arquitectura.md`. Sin tag.
-- **Después**: el owner prueba «MHL MediaManagement» en Resolve (ya enlazado; criterio de cierre de #1) y responde #2 (tarjeta parcial: cambia el alcance) → `v0.2.0` (skill `release`). Issues #3–#7 son decisiones y comprobaciones del owner.
+- **Después**: implementar D11 (#2, casilla «Tarjeta completa» y aviso de parcial) y D12 (#3) → prueba del owner en Resolve → `v0.2.0` (skill `release`). Roadmap D13: v0.3.0 inglés, v0.4.0 clips de varios ficheros (#5), v0.5.0 varios destinos (D14).
 
 ## Pendiente del owner (2026-10-01)
-- Confirmar o corregir los nombres de D9 (aplicados en modo autónomo).
-- Probar la versión en Resolve (#1) y las comprobaciones de #7; decidir #2 (recomendación: copiar la tarjeta entera) y #3.
+- Probar la versión en Resolve (#1) y las comprobaciones de #7.
 - Decidir si crea la nota de proyecto `MHL MediaManagement` en el vault (área `#archivo`).
 - Resumir en `docs/contexto-estudio.md`, en genérico, la política de MHL del estudio (documento interno).
 - Mantener `scripts/leak-patterns.local.txt` con el nombre del estudio y de clientes.
