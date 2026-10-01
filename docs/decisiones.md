@@ -89,5 +89,27 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - **Elección**: **desde ahora**. `main` protegida en GitHub: PR obligatorio, check `ci` verde y al día con `main`, historial lineal, sin force-push ni borrado, aplicado también a admins; **sin revisor obligatorio** mientras escriba una sola persona (se añadirá cuando entre alguien más). Squash o rebase al mergear; merge commits desactivados; la rama se borra al mergear. El trabajo de D11/D12 es el primer PR (`feat/2-tarjeta-parcial`). Sustituye la frase de D7 «hasta `v0.1.0` se puede commitear directo a `main`».
 - 2026-10-01.
 
+## D16 — «Qué copiar»: un selector de tres opciones sustituye a las casillas «Solo media de cámara» y «Tarjeta completa»
+- **Contexto**: issue #9. Con «Tarjeta completa» un fichero de la tarjeta que no figura en el MHL del DIT bloqueaba el MHL. El owner redefine la casilla: la unidad es el MHL del DIT, no la carpeta, y quiere que cada opción diga con claridad qué hace y qué no.
+- **Opciones**: dos casillas independientes; selector de tres opciones (desplegable con frase de ayuda, o botones de radio).
+- **Elección**: desplegable **«Qué copiar»** con frase de ayuda debajo y en la vista previa: (1) **Clips del timeline**: solo los usados + historial MHL del DIT tal cual; no copia el resto de la tarjeta ni ficheros sin MHL; un verificador externo dirá que faltan los no copiados. (2) **Respetar historial MHL (tarjetas/reels enteros)**: todo lo que atestigua el MHL del DIT de cada tarjeta usada; lo que esté en la tarjeta y no en su MHL **no se copia y se avisa**; el destino verifica limpio. (3) **Todo, también sin MHL**: como (2) más los ficheros sin MHL de origen, verificados origen contra destino. CLI: `--scope clips|mhl|all` (sustituye a `--all` y `--full-cards`). Sustituye la casilla «Tarjeta completa» de D11.
+- 2026-10-01.
+
+## D17 — Nombres con acentos: se compara normalizando (NFC/NFD) y se usa el nombre real del disco
+- **Contexto**: issue #4. macOS guarda NFD; Resolve, el MHL del DIT o una lista pueden traer NFC: el clip fallaba con «no figura» o se duplicaba.
+- **Elección**: al preparar se toma el nombre real del listado del disco; `scan` deduplica por ruta real; al comparar con el MHL del DIT (ASC o legacy) se buscan las dos formas; el MHL nuevo lleva la ruta tal como está en disco. Pendiente de medir en el NAS en qué forma da Resolve `File Path` (#4 sigue abierto para esa medida). Si es el MHL del DIT el que trae la otra forma, el script verifica por contenido pero la referencia marca «missing» (H10): la tarjeta de origen ya falla igual sin el script; se escribe el MHL y se avisa.
+- 2026-10-01.
+
+## D18 — MHL legacy 1.x: XXH32 en decimal, `<null>`, `<size>` y `.mhl` por encima de la tarjeta
+- **Contexto**: issue #6, investigado contra la XSD 1.1 de mediahashlist.org y el código de `mhl-tool` de Pomfort. `<xxhash>` (XXH32) va en **decimal de 10 dígitos**; `<xxhash64be>` es `xxh64().hexdigest()` y `<xxhash64>` el mismo con los bytes invertidos; `<null>` significa «solo tamaño»; `<size>` es obligatorio; el `.mhl` puede estar en cualquier carpeta por encima del fichero.
+- **Elección**: (1) `<xxhash>` se compara como entero. (2) `<null>`: si el tamaño cuadra, se verifica origen contra destino con nuestro xxh64 y el log avisa de que el DIT no dejó hash. (3) Un `<size>` que no cuadra es fallo de verificación aunque el hash coincida. (4) Se buscan `.mhl` también en los ancestros, con rutas relativas a cada `.mhl`, **pero** con la salvaguarda de D19: un MHL que cubra más que la tarjeta no se copia entero sin confirmación. (5) Un `.mhl` ilegible se registra como error legible, no como «no figura».
+- 2026-10-01.
+
+## D19 — Salvaguarda: un MHL que cubre más que las tarjetas usadas pide confirmación antes de copiar
+- **Contexto**: D16 y D18. Con «Respetar historial MHL», si el MHL que atestigua un clip está por encima de la tarjeta (un `.mhl` o un `ascmhl/` del día o del proyecto), «todo lo que atestigua» podría ser toda la media.
+- **Opciones**: aviso con dos salidas al Copiar; nunca copiar más allá de la carpeta de los clips; solo avisar en la vista previa.
+- **Elección**: la vista previa marca el caso («MHL de nivel superior: cubre N ficheros») y, al pulsar Copiar, un aviso muestra el MHL (ruta, tipo, ficheros, tamaño) y las carpetas usadas, con tres salidas: **Copiar todo el MHL**, **Solo las carpetas usadas** (lo que atestigua el MHL dentro de ellas), **Cancelar**. «Carpeta usada» = la primera carpeta bajo el MHL (`DIA_03/A001/…` → `A001`). En CLI, `--scope mhl` se limita a las carpetas usadas salvo `--whole-mhl`. La elección queda en el log.
+- 2026-10-01.
+
 ## Pendiente de decidir (owner)
 - Si la nota de proyecto `MHL MediaManagement` entra en el vault de Obsidian (área `#archivo`) y cuándo.
