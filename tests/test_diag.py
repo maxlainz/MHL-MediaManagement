@@ -42,11 +42,11 @@ def has(lines, prefix):
 def test_diagnostico_todo_bien(mp, fake_env):
     exe, py = fake_ascmhl_in_home(fake_env)
     lines = mp.diagnostics(home=fake_env)
-    assert lines[0] == f"versión: MHL MediaManagement {mp.__version__}"
-    for p in ("✓ __file__:", "INSTALL_PATH:", "✓ script del worker:", "sys.version:", "sys.executable:", "PATH:",
-              "PYTHONHOME:", "PYTHONPATH:", "TMPDIR:", "codificación:", "which ascmhl: None",
-              f"candidato: {exe} (existe: sí)", f"✓ find_ascmhl: {exe}", f"✓ python_for: {py}",
-              "✓ Python del worker:", "✓ WORK_DIR:", "✓ LOG_DIR:", "status recientes: ninguno"):
+    assert lines[0] == f"version: MHL MediaManagement {mp.__version__}"
+    for p in ("✓ __file__:", "INSTALL_PATH:", "✓ worker script:", "sys.version:", "sys.executable:", "PATH:",
+              "PYTHONHOME:", "PYTHONPATH:", "TMPDIR:", "encoding:", "which ascmhl: None",
+              f"candidate: {exe} (exists: yes)", f"✓ find_ascmhl: {exe}", f"✓ python_for: {py}",
+              "✓ worker Python:", "✓ WORK_DIR:", "✓ LOG_DIR:", "recent statuses: none"):
         assert has(lines, p), (p, lines)
     assert not any(line.startswith("✗") for line in lines), lines
 
@@ -55,11 +55,11 @@ def test_diagnostico_version_equivocada_y_status(mp, fake_env):
     fake_ascmhl_in_home(fake_env, "1.1")
     mp.WORK_DIR.mkdir(parents=True)
     (mp.WORK_DIR / "status_20260101_000000.json").write_text(json.dumps(
-        {"state": "failed", "phase": "Copia", "msg": "roto", "pid": 7, "version": "0.2.0"}))
+        {"state": "failed", "phase": "Copy", "msg": "broken", "pid": 7, "version": "0.2.0"}))
     lines = mp.diagnostics(home=fake_env)
-    bad = [line for line in lines if line.startswith("✗ Python del worker:")]
+    bad = [line for line in lines if line.startswith("✗ worker Python:")]
     assert bad and "ascmhl 1.1" in bad[0]
-    assert "status: status_20260101_000000.json · failed · Copia · roto · pid 7 · versión 0.2.0" in lines
+    assert "status: status_20260101_000000.json · failed · Copy · broken · pid 7 · version 0.2.0" in lines
 
 
 def test_diagnostico_sin_ascmhl_y_log_dir_no_escribible(mp, fake_env, tmp_path, monkeypatch):
@@ -87,10 +87,10 @@ def test_diagnostico_con_resolve_ui_y_temporizador(mp, fake_env):
 
     lines = mp.diagnostics(R(), None, UIok(), ticks={"disp.On.Timeout": 3}, home=fake_env)
     assert "Resolve: 21.1.0.0" in lines and has(lines, "✓ ui.Timer:")
-    assert "temporizador (disparos desde que se abrió la ventana): {'disp.On.Timeout': 3}" in lines
+    assert "timer (ticks since the window opened): {'disp.On.Timeout': 3}" in lines
     lines = mp.diagnostics(object(), None, UIbad(), ticks={}, home=fake_env)
     assert has(lines, "✗ Resolve: GetVersionString") and "✗ ui.Timer: RuntimeError: sin Timer" in lines
-    assert "temporizador (disparos desde que se abrió la ventana): ninguno" in lines
+    assert "timer (ticks since the window opened): none" in lines
 
 
 def test_write_diag(mp, work_dirs):
@@ -103,7 +103,7 @@ def test_cli_diag(tmp_path):
     r = subprocess.run([sys.executable, str(SCRIPT), "--diag"], capture_output=True, text=True,
                        env=isolated_env(tmp_path))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert r.stdout.startswith("versión: MHL MediaManagement") and "find_ascmhl:" in r.stdout
+    assert r.stdout.startswith("version: MHL MediaManagement") and "find_ascmhl:" in r.stdout
 
 
 # ---------------- GuiLog y TickCounter ----------------
@@ -111,10 +111,10 @@ def test_cli_diag(tmp_path):
 def test_guilog_escribe(mp, work_dirs):
     g = mp.GuiLog()
     g("ventana abierta")
-    g("Elegir… → RequestDir devolvió None")
+    g("Browse… → RequestDir returned None")
     assert g.path.parent == mp.LOG_DIR and g.path.name.startswith("gui_")
     lines = g.path.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 2 and lines[1].endswith(" Elegir… → RequestDir devolvió None")
+    assert len(lines) == 2 and lines[1].endswith(" Browse… → RequestDir returned None")
     assert lines[0][2] == ":" and lines[0][8] == "."  # HH:MM:SS.mmm
 
 
@@ -157,8 +157,8 @@ def test_selftest_end_to_end(mp, venv_env):
     ok, lines = mp.selftest(log=seen.append)
     assert ok, "\n".join(lines)
     assert seen == lines
-    assert any(s.startswith("✓ reenganche: ok") for s in seen)
-    assert "✓ ascmhl-debug verify DEST: rc 0" in seen and seen[-1] == "✓ AUTOTEST OK"
+    assert any(s.startswith("✓ reattach: ok") for s in seen)
+    assert "✓ ascmhl-debug verify DEST: rc 0" in seen and seen[-1] == "✓ SELF-TEST OK"
     assert not list(venv_env.glob("mhlmm_autotest_*"))  # temporal borrado
     status = json.loads(next(mp.WORK_DIR.glob("status_*.json")).read_text())
     assert status["state"] == "done" and status["version"] == mp.__version__
@@ -176,5 +176,5 @@ def test_selftest_keep_conserva_el_temporal(mp, venv_env):
 def test_selftest_sin_ascmhl_falla_limpio(mp, monkeypatch, work_dirs):
     monkeypatch.setattr(mp, "find_ascmhl", lambda home=None: None)
     ok, lines = mp.selftest(log=lambda s: None)
-    assert not ok and lines[0].startswith("✗ ascmhl: no encontrado") and lines[-1] == "✗ AUTOTEST FALLIDO"
+    assert not ok and lines[0].startswith("✗ ascmhl: not found") and lines[-1] == "✗ SELF-TEST FAILED"
     assert not mp.WORK_DIR.exists()

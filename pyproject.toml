@@ -1,6 +1,6 @@
 [project]
 name = "mhl-mediamanagement"
-version = "0.2.0"
+version = "0.3.0"
 description = "Media management for DaVinci Resolve that honours the DIT's source MHL and writes an ASC MHL of everything copied"
 readme = "README.md"
 license = "MIT"

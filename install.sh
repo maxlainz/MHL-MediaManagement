@@ -8,21 +8,21 @@ DEST="$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion
 mkdir -p "$DEST"
 rm -f "$DEST/MHL Pull.py"  # nombre antiguo (renombrado, issue #1)
 if [ "$1" = "--link" ]; then
-  ln -sf "$DIR/mhl_mediamanagement.py" "$DEST/MHL MediaManagement.py"; echo "✓ Enlace: $DEST/MHL MediaManagement.py → $DIR/mhl_mediamanagement.py"
+  ln -sf "$DIR/mhl_mediamanagement.py" "$DEST/MHL MediaManagement.py"; echo "✓ Link: $DEST/MHL MediaManagement.py → $DIR/mhl_mediamanagement.py"
 else
-  rm -f "$DEST/MHL MediaManagement.py"; cp "$DIR/mhl_mediamanagement.py" "$DEST/MHL MediaManagement.py"; echo "✓ Copiado a: $DEST/MHL MediaManagement.py"
+  rm -f "$DEST/MHL MediaManagement.py"; cp "$DIR/mhl_mediamanagement.py" "$DEST/MHL MediaManagement.py"; echo "✓ Copied to: $DEST/MHL MediaManagement.py"
 fi
 PY=/Library/Frameworks/Python.framework/Versions/Current/bin/python3
 [ -x "$PY" ] || PY=python3
 ASCMHL_VERSION=1.2  # D6: la misma que fija pyproject.toml (lo comprueba tests/test_version.py)
 if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-  echo "✗ $PY es $("$PY" -V 2>&1 || echo 'desconocido'); ascmhl $ASCMHL_VERSION necesita Python ≥ 3.11." >&2
-  echo "  Instala Python 3.11 o posterior de python.org y vuelve a lanzar install.sh." >&2
+  echo "✗ $PY is $("$PY" -V 2>&1 || echo unknown); ascmhl $ASCMHL_VERSION needs Python ≥ 3.11." >&2
+  echo "  Install Python 3.11 or later from python.org and run install.sh again." >&2
   exit 1
 fi
 if "$PY" -c "import ascmhl, xxhash, importlib.metadata as m, sys; sys.exit(m.version('ascmhl') != '$ASCMHL_VERSION')" 2>/dev/null; then
-  echo "✓ ascmhl $ASCMHL_VERSION disponible en $PY"
+  echo "✓ ascmhl $ASCMHL_VERSION available in $PY"
 else
-  echo "Instalando ascmhl $ASCMHL_VERSION en $PY…"; "$PY" -m pip install --user "ascmhl==$ASCMHL_VERSION"
+  echo "Installing ascmhl $ASCMHL_VERSION in $PY…"; "$PY" -m pip install --user "ascmhl==$ASCMHL_VERSION"
 fi
-echo "Resolve: Workspace > Scripts > MHL MediaManagement (reinicia Resolve si no aparece). Requiere Resolve Studio."
+echo "Resolve: Workspace > Scripts > MHL MediaManagement (restart Resolve if it does not show up). Requires Resolve Studio."

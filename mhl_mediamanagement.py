@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 """
-MHL MediaManagement — media management de uno o varios timelines de DaVinci Resolve respetando el MHL de origen.
+MHL MediaManagement — media management of one or more DaVinci Resolve timelines that respects the source MHL.
 
-Flujo:
-  1. GUI (Workspace > Scripts > MHL MediaManagement): eliges timelines, destino y «Qué copiar» (D16).
-     «Preparar» lee los timelines (sin duplicados) y muestra la vista previa. No crea ningún MHL.
-  2. Copia (en segundo plano, con progreso en la ventana): ficheros, conservando la estructura desde la raíz común; las tarjetas
-     con MHL de origen se copian con su MHL tal cual (carpeta ascmhl/ o .mhl legacy). «Clips del timeline» (tarjeta
-     parcial, avisada, D11); «Respetar historial MHL» copia todo lo que atestigua el MHL del DIT de cada tarjeta usada
-     (D19/D20: un MHL que cubre varias tarjetas y no todas usadas pide elegir); «Todo» añade los ficheros sin MHL.
-  3. Verificación (solo lectura): cada fichero de tarjeta contra su MHL de origen;
-     los ficheros sin MHL, origen contra destino.
-  4. Solo si TODO cuadra: un ASC MHL de todo el media management en la raíz del destino.
-     Según el spec ASC MHL, cada tarjeta con historial recibe una generación "verified"
-     que la raíz referencia; las generaciones del DIT no se tocan.
+Flow:
+  1. GUI (Workspace > Scripts > MHL MediaManagement): choose timelines, destination and "What to copy" (D16).
+     "Prepare" reads the timelines (no duplicates) and shows the preview. It does not create any MHL.
+  2. Copy (in the background, with progress in the window): files, keeping the structure from the common root; cards
+     with a source MHL are copied with their MHL as is (ascmhl/ folder or legacy .mhl). "Timeline clips" (partial
+     card, flagged, D11); "Respect MHL history" copies everything the DIT's MHL attests for each card used
+     (D19/D20: an MHL that covers several cards, not all of them used, asks you to choose); "Everything" adds the
+     files without an MHL.
+  3. Verification (read-only): each card file against its source MHL;
+     files without an MHL, source against destination.
+  4. Only if EVERYTHING matches: one ASC MHL of the whole media management at the root of the destination.
+     Per the ASC MHL spec, each card with a history gets a "verified" generation
+     that the root references; the DIT's generations are left untouched.
 
-Cámara = fichero dentro de una tarjeta con MHL de origen (ascmhl/ en algún ancestro, que gana, D12; o el .mhl más
-cercano que lo cita, D18).
+Camera = file inside a card with a source MHL (ascmhl/ in some ancestor, which wins, D12; or the nearest .mhl that
+lists it, D18).
 
-Sin GUI:
-  python3 "MHL MediaManagement.py" --files lista.txt --dest /Volumes/X [--scope clips|mhl|all] [--whole-mhl] [--dry-run]
-  python3 "MHL MediaManagement.py" --diag                  (diagnóstico del entorno)
-  python3 "MHL MediaManagement.py" --selftest [--keep]     (autotest: trabajo real sobre una tarjeta sintética)
-  python3 "MHL MediaManagement.py" --worker job.json      (lo usa la GUI)
+Without the GUI:
+  python3 "MHL MediaManagement.py" --files list.txt --dest /Volumes/X [--scope clips|mhl|all] [--whole-mhl] [--dry-run]
+  python3 "MHL MediaManagement.py" --diag                  (environment diagnostics)
+  python3 "MHL MediaManagement.py" --selftest [--keep]     (self-test: real job on a synthetic card)
+  python3 "MHL MediaManagement.py" --worker job.json      (used by the GUI)
 
-Requisitos: Python ≥ 3.11 con ascmhl 1.2: pip3 install 'ascmhl==1.2' (trae xxhash). Ver install.sh.
+Requirements: Python >= 3.11 with ascmhl 1.2: pip3 install 'ascmhl==1.2' (brings xxhash). See install.sh.
 """
 import datetime
 import hashlib
@@ -42,7 +43,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 INSTALL_PATH = Path.home() / "Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/MHL MediaManagement.py"
 WORK_DIR = Path.home() / "Library/Application Support/mhl_mediamanagement"
@@ -187,14 +188,14 @@ class FS:
             paths = {}
             try:
                 if not names:
-                    raise ValueError("sin manifiestos")
+                    raise ValueError("no manifests")
                 for n in names:
                     for el in ET.parse(os.path.join(d, n)).getroot().iter():
                         if _tag(el) != "hash":  # ASC lleva namespace (urn:ASC:MHL:v2.0)
                             continue
                         sub = next((c for c in el if _tag(c) == "path"), None)
                         if sub is None or not (sub.text or "").strip():
-                            raise ValueError("<hash> sin ruta")
+                            raise ValueError("<hash> without a path")
                         size = sub.get("size")
                         paths[sub.text.strip().replace("\\", "/")] = int(size) if (size or "").isdigit() else None
                 self.totals[key] = paths
@@ -318,16 +319,16 @@ def scan(raw_paths, log=print):
 
 
 SCOPES = ("clips", "mhl", "all")  # D16: «Qué copiar», en el orden del desplegable
-SCOPE_LABEL = {"clips": "Clips del timeline", "mhl": "Respetar historial MHL (tarjetas/reels enteros)",
-               "all": "Todo, también sin MHL"}
+SCOPE_LABEL = {"clips": "Timeline clips", "mhl": "Respect MHL history (whole cards/reels)",
+               "all": "Everything, also without MHL"}
 SCOPE_HELP = {
-    "clips": "Copia solo los clips usados, con el historial MHL del DIT tal cual. No copia el resto de la tarjeta ni"
-             " ficheros sin MHL (audio suelto, gráficos). Un verificador externo dirá que en esa tarjeta faltan los"
-             " clips no copiados.",
-    "mhl": "Copia todo lo que atestigua el MHL del DIT de cada tarjeta usada. No copia lo que esté en la tarjeta y no"
-           " en su MHL (se avisa) ni ficheros sin MHL. El destino verifica limpio con cualquier herramienta.",
-    "all": "Como «Respetar historial MHL» y además los ficheros sin MHL de origen, verificados origen contra destino"
-           " con nuestro hash.",
+    "clips": "Copies only the clips used, with the DIT's MHL history as is. Does not copy the rest of the card or"
+             " files without an MHL (loose audio, graphics). An external verifier will report the clips not copied as"
+             " missing from that card.",
+    "mhl": "Copies everything the DIT's MHL attests for each card used. Does not copy what is on the card but not in"
+           " its MHL (you get a warning) or files without an MHL. The destination verifies clean with any tool.",
+    "all": "Like “Respect MHL history”, plus the files without a source MHL, verified source against destination"
+           " with our hash.",
 }
 IGNORED = {".DS_Store", "ascmhl"}  # los que ascmhl ignora por defecto
 
@@ -346,9 +347,9 @@ def _top(rel):
     return rel.split("/", 1)[0] if "/" in rel else "."
 
 
-def es_int(n):
-    """2340 → «2 340»."""
-    return f"{n:,}".replace(",", " ")
+def en_int(n):
+    """2340 → «2,340»."""
+    return f"{n:,}"
 
 
 CARD_MIN_FILES = 20  # D20: una carpeta de primer nivel con más ficheros atestiguados que esto cuenta como tarjeta
@@ -423,7 +424,7 @@ def build_plan(scanned, scope="clips", whole_mhl=False):
     además todo lo que atestigua el MHL del DIT de cada tarjeta usada (D19: limitado a las carpetas usadas salvo
     whole_mhl); "all" = "mhl" más los ficheros sin MHL."""
     if scope not in SCOPES:
-        raise ValueError(f"scope desconocido: {scope}")
+        raise ValueError(f"unknown scope: {scope}")
     fs = scanned.get("fs") or FS()
     camera_only = scope != "all"
     excluded = [it for it in scanned["items"] if camera_only and it["kind"] == "none"]
@@ -483,7 +484,7 @@ def dest_conflict(plan, d):
     enlaces simbólicos o de un segundo montaje (realpath en los dos lados; un realpath por carpeta, no por frame)."""
     if plan.get("collisions"):
         rel, a, b = plan["collisions"][0]
-        return f"Dos orígenes distintos irían al mismo sitio del destino ({rel}): {a} y {b}"
+        return f"Two different sources would go to the same place in the destination ({rel}): {a} and {b}"
     rdirs = {}
 
     def real(p):
@@ -497,22 +498,22 @@ def dest_conflict(plan, d):
     rd = os.path.realpath(str(d))
     for a, ra in anchors:
         if _inside(rd, ra):
-            return f"El destino está dentro de una carpeta de origen: {a}"
+            return f"The destination is inside a source folder: {a}"
     srcs = {real(it["src"]): it["src"] for it in plan["items"]}
     targets = {}  # carpeta de destino resuelta → ruta mostrada
     for it in plan["items"]:
         t = real(d / it["rel"])
         if t in srcs:
             if srcs[t] == it["src"]:
-                return f"Se copiaría un fichero sobre sí mismo: {it['src']}"
-            return f"Se copiaría encima de otro fichero de origen: {srcs[t]}"
+                return f"A file would be copied onto itself: {it['src']}"
+            return f"It would copy over another source file: {srcs[t]}"
         targets.setdefault(os.path.dirname(t), d / os.path.dirname(it["rel"]))
         if it["card_rel"]:
             targets.setdefault(real(d / it["card_rel"]), d / it["card_rel"])
     for t, shown in targets.items():
         for a, ra in anchors:
             if _inside(t, ra):
-                return f"Se escribiría dentro de una carpeta de origen ({a}): {shown}"
+                return f"It would write inside a source folder ({a}): {shown}"
     return None
 
 
@@ -528,25 +529,25 @@ def is_partial(c):
 
 
 def card_count(c):
-    """«2 de 37 clips (parcial)», «5 de 5 clips» o «2 clips (total desconocido)»."""
+    """«2 of 37 clips (partial)», «5 of 5 clips» or «2 clips (total unknown)»."""
     if c.get("total") is None:
-        return f"{c['used']} clips (total desconocido)"
-    return f"{c['used']} de {c['total']} clips" + (" (parcial)" if is_partial(c) else "")
+        return f"{c['used']} clips (total unknown)"
+    return f"{c['used']} of {c['total']} clips" + (" (partial)" if is_partial(c) else "")
 
 
 def card_line(card_rel, c):
-    tag = {"asc": "ASC MHL", "legacy": "MHL legacy"}.get(c["kind"], c["kind"])
+    tag = {"asc": "ASC MHL", "legacy": "legacy MHL"}.get(c["kind"], c["kind"])
     return f"[{tag}] {card_rel} — {card_count(c)}"
 
 
 def cards_summary(cards, only_partial=False):
-    """«A001 2/37 (parcial), B001 5/5» (log y resumen) o, con only_partial, «A001 2/37» (comment del MHL)."""
+    """«A001 2/37 (partial), B001 5/5» (log y resumen) o, con only_partial, «A001 2/37» (comment del MHL)."""
     out = []
     for rel, c in sorted(cards.items()):
         if only_partial and not is_partial(c):
             continue
         t = "?" if c.get("total") is None else c["total"]
-        out.append(f"{rel} {c['used']}/{t}" + (" (parcial)" if is_partial(c) and not only_partial else ""))
+        out.append(f"{rel} {c['used']}/{t}" + (" (partial)" if is_partial(c) and not only_partial else ""))
     return ", ".join(out)
 
 
@@ -554,14 +555,10 @@ def card_notes(card_rel, c):
     """D16: avisos de una tarjeta con «Respetar historial MHL»: lo que hay y no está en el MHL, y lo atestiguado que falta."""
     out = []
     if c.get("unlisted"):
-        out.append(f"{c['unlisted']} ficheros de {card_rel} no figuran en el MHL del DIT; no se copian")
+        out.append(f"{c['unlisted']} files of {card_rel} are not in the DIT's MHL; not copied")
     if c.get("absent"):
-        out.append(f"{card_rel}: faltan {c['absent']} ficheros atestiguados")
+        out.append(f"{card_rel}: {c['absent']} attested files are missing")
     return out
-
-
-def human_es(b):
-    return human(b).replace(".", ",")
 
 
 def _esc(t):
@@ -570,58 +567,59 @@ def _esc(t):
 
 
 def _fname(n):
-    return "(raíz)" if n == "." else n
+    return "(root)" if n == "." else n
 
 
 def y_join(names):
-    """["A002", "A004", "A005"] → «A002, A004 y A005»."""
+    """["A002", "A004", "A005"] → «A002, A004 and A005»."""
     names = [_fname(n) for n in names]
-    return " y ".join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else "".join(names)
+    return " and ".join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else "".join(names)
 
 
 def big_mhl_header(b):
-    """D20: «MHL de nivel superior: /Volumes/X/DIA_03 (MHL legacy) atestigua 4 tarjetas, 2 340 ficheros, 1,8 TB.
-    Clips usados en A001 (18) y A003 (41).»"""
-    tag = "ASC MHL" if b["kind"] == "asc" else "MHL legacy"
+    """D20: «Top-level MHL: /Volumes/X/DIA_03 (legacy MHL) attests 4 cards, 2,340 files, 1.8 TB.
+    Clips used in A001 (18) and A003 (41).»"""
+    tag = "ASC MHL" if b["kind"] == "asc" else "legacy MHL"
     used = y_join([f"{_fname(n)} ({k})" for n, k in b["used_folders"]])
-    return (f"MHL de nivel superior: {b['anchor']} ({tag}) atestigua {len(b['cards'])} tarjetas,"
-            f" {es_int(b['files'])} ficheros, {human_es(b['bytes'])}. Clips usados en {used}.")
+    return (f"Top-level MHL: {b['anchor']} ({tag}) attests {len(b['cards'])} cards,"
+            f" {en_int(b['files'])} files, {human(b['bytes'])}. Clips used in {used}.")
 
 
-CONFIRM_QUESTION = "Este MHL cubre más que las tarjetas usadas. Elige:"
+CONFIRM_QUESTION = "This MHL covers more than the cards used. Choose:"
 
 
 def big_mhl_options(bigs):
     """D20: (todo, solo usadas, cancelar) con sus consecuencias y cifras de los manifiestos, sumando los MHL de nivel
     superior del plan. Mismo texto en la ventana, la vista previa y el CLI."""
     files = sum(b["files"] for b in bigs)
-    size = human_es(sum(b["bytes"] for b in bigs))
+    size = human(sum(b["bytes"] for b in bigs))
     lfiles = sum(b["limited_files"] for b in bigs)
-    lsize = human_es(sum(b["limited_bytes"] for b in bigs))
+    lsize = human(sum(b["limited_bytes"] for b in bigs))
     used = y_join([n for b in bigs for n, _ in b["used_folders"]])
     missing = y_join([n for b in bigs for n in b["missing_folders"]])
-    return (f"Copiar todo el MHL ({es_int(files)} ficheros, {size}): se lleva toda la media que atestigua, también las"
-            " tarjetas que el timeline no usa; es, a efectos prácticos, copiar el día entero. El destino verifica"
-            " limpio.",
-            f"Solo las carpetas usadas ({es_int(lfiles)} ficheros, {lsize}): se copian {used} enteras y el MHL del"
-            f" DIT tal cual; un verificador externo dirá que en ese MHL faltan {missing}, y el comentario del"
-            " manifiesto lo deja escrito como parcial.",
-            "Cancelar: no se copia nada.")
+    return (f"Copy the whole MHL ({en_int(files)} files, {size}): takes all the media it attests, including the"
+            " cards the timeline does not use; in practice, it copies the whole day. The destination verifies"
+            " clean.",
+            f"Only the used folders ({en_int(lfiles)} files, {lsize}): copies {used} in full and the DIT's MHL"
+            f" as is; an external verifier will report {missing} as missing from that MHL, and the manifest"
+            " comment records it as partial.",
+            "Cancel: nothing is copied.")
 
 
 def big_mhl_choice(plan):
-    """D20: línea «Elección: …» para el GuiLog y la cabecera del log del trabajo."""
+    """D20: línea «Choice: …» para el GuiLog y la cabecera del log del trabajo."""
     out = []
     for b in plan.get("big_mhl") or []:
         name = os.path.basename(b["anchor"].rstrip(os.sep)) or b["anchor"]
         used = ", ".join(_fname(n) for n, _ in b["used_folders"])
-        nums = (f"{es_int(b['limited_files'])} de {es_int(b['files'])} ficheros,"
-                f" {human_es(b['limited_bytes'])} de {human_es(b['bytes'])}")
+        nums = (f"{en_int(b['limited_files'])} of {en_int(b['files'])} files,"
+                f" {human(b['limited_bytes'])} of {human(b['bytes'])}")
         if plan.get("whole_mhl"):
-            out.append(f"Elección: todo el MHL de {name} ({es_int(b['files'])} ficheros, {human_es(b['bytes'])})"
-                       f" — incluye {', '.join(_fname(n) for n in b['missing_folders'])}, que el timeline no usa")
+            out.append(f"Choice: whole MHL of {name} ({en_int(b['files'])} files, {human(b['bytes'])})"
+                       f" — includes {', '.join(_fname(n) for n in b['missing_folders'])}, which the timeline does"
+                       " not use")
         else:
-            out.append(f"Elección: solo carpetas usadas ({used}) — el MHL de {name} cubre además"
+            out.append(f"Choice: only used folders ({used}) — the MHL of {name} also covers"
                        f" {', '.join(_fname(n) for n in b['missing_folders'])} · {nums}")
     return out
 
@@ -633,22 +631,22 @@ def big_mhl_lines(plan, cli=False):
         return []
     out = [big_mhl_header(b) for b in bigs]
     if plan.get("whole_mhl"):
-        return out + ["    → se copia todo el MHL"]
+        return out + ["    → the whole MHL is copied"]
     out.append(CONFIRM_QUESTION)
     opts = big_mhl_options(bigs)
     if cli:
-        opts = (opts[0].replace("Copiar todo el MHL", "--whole-mhl, copiar todo el MHL", 1),
-                opts[1].replace("Solo las carpetas usadas", "Sin --whole-mhl (lo que se hace ahora), solo las carpetas"
-                                " usadas", 1))
+        opts = (opts[0].replace("Copy the whole MHL", "--whole-mhl, copy the whole MHL", 1),
+                opts[1].replace("Only the used folders", "Without --whole-mhl (what happens now), only the used"
+                                " folders", 1))
     out += [f"  · {o}" for o in opts[:2 if cli else 3]]
-    out.append("    → sin --whole-mhl se copian solo las carpetas usadas" if cli else
-               "    → al pulsar Copiar se pide elegir")
+    out.append("    → without --whole-mhl only the used folders are copied" if cli else
+               "    → you will be asked to choose when you press Copy and verify")
     return out
 
 
 def preview_lines(plan):
     scope = plan.get("scope", "clips")
-    lines = [f"Qué copiar: {SCOPE_LABEL[scope]} — {SCOPE_HELP[scope]}"]
+    lines = [f"What to copy: {SCOPE_LABEL[scope]} — {SCOPE_HELP[scope]}"]
     big = big_mhl_lines(plan)
     if big:
         lines += [""] + big
@@ -662,19 +660,19 @@ def preview_lines(plan):
         if g["card_rel"] != last:
             last = g["card_rel"]
             c = plan.get("cards", {}).get(g["card_rel"])
-            lines.append("\n" + (card_line(g["card_rel"], c) if c else "[sin MHL] —"))
+            lines.append("\n" + (card_line(g["card_rel"], c) if c else "[no MHL] —"))
             lines += [f"    ! {n}" for n in (card_notes(g["card_rel"], c) if c else [])]
         if g["rest"]:  # «Respetar historial MHL»: lo que atestigua el MHL y no estaba en los timelines
-            lines.append(f"    + resto de lo que atestigua el MHL  ({g['n']} ficheros)")
+            lines.append(f"    + rest of what the MHL attests  ({g['n']} files)")
             continue
         rel = os.path.relpath(gp, str(plan["base"]))
         lines.append(f"    {rel}" + (f"  ({g['n']} frames)" if g["n"] > 1 else ""))
     excl = sorted({e["group"] for e in plan["excluded"]})
     if excl:
-        lines.append("\n[EXCLUIDOS — sin MHL de origen]")
+        lines.append("\n[EXCLUDED — not camera]")
         lines += [f"    {e}" for e in excl]
     if plan["missing"]:
-        lines.append("\n[NO ENCONTRADOS o sin permiso de lectura]")
+        lines.append("\n[NOT FOUND or unreadable]")
         lines += [f"    {m}" for m in plan["missing"]]
     return lines
 
@@ -822,7 +820,7 @@ def hash_asc(path, formats, on_bytes=None):
         try:
             hs[f] = new_hasher_for_hash_type(f)
         except (KeyError, ValueError):
-            raise ValueError(f"formato de hash no soportado: {f}") from None
+            raise ValueError(f"unsupported hash format: {f}") from None
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(CHUNK), b""):
             for h in hs.values():
@@ -906,7 +904,7 @@ def make_on_term(log, st, logf):
     def on_term(signum, frame):
         if _COMMITTING[0]:
             _CANCEL_ASKED[0] = True
-            log("\n… Cancelación recibida mientras se escribe el MHL: se termina de escribir y se sale.")
+            log("\n… Cancel received while the MHL is being written: finishing the write, then exiting.")
             return
         tmp = _CURRENT_TMP[0]  # fichero .mhlmm_part o carpeta ascmhl.mhlmm_part a medias
         try:
@@ -916,8 +914,8 @@ def make_on_term(log, st, logf):
                 os.remove(tmp)
         except OSError:
             pass
-        log("\n✗ CANCELADO por el usuario. No se ha creado el MHL.")
-        st.set(force=True, state="cancelled", msg="Cancelado")
+        log("\n✗ CANCELLED by the user. The MHL has not been created.")
+        st.set(force=True, state="cancelled", msg="Cancelled")
         logf.close()
         os._exit(130)
     return on_term
@@ -944,9 +942,9 @@ def worker(job_path, status_path=None):
         for mod in ("ascmhl", "xxhash"):
             __import__(mod)
     except ImportError as e:
-        log(f"✗ El Python del worker ({sys.executable}) no puede importar ascmhl/xxhash: {e}\n"
-            f"  Instala con: pip3 install 'ascmhl=={ASCMHL_VERSION}' con Python ≥ 3.11 (ver install.sh). No se ha copiado nada.")
-        st.set(force=True, state="failed", msg="Falta ascmhl en el Python del worker (ver log)")
+        log(f"✗ The worker's Python ({sys.executable}) cannot import ascmhl/xxhash: {e}\n"
+            f"  Install with: pip3 install 'ascmhl=={ASCMHL_VERSION}' with Python ≥ 3.11 (see install.sh). Nothing has been copied.")
+        st.set(force=True, state="failed", msg="ascmhl is missing from the worker's Python (see log)")
         logf.close()
         return 1
     st.heartbeat()
@@ -956,8 +954,8 @@ def worker(job_path, status_path=None):
         return _work(job, dest, dry, log, st)
     except Exception:
         import traceback
-        log("\n✗ ERROR INESPERADO\n" + traceback.format_exc())
-        st.set(force=True, state="failed", msg="Error inesperado (ver log)")
+        log("\n✗ UNEXPECTED ERROR\n" + traceback.format_exc())
+        st.set(force=True, state="failed", msg="Unexpected error (see log)")
         return 1
     finally:
         st.beating = False
@@ -977,22 +975,22 @@ def _mhl_dirs(history):
     return out
 
 
-SCOPE_WORD = {"clips": "clips del timeline", "mhl": "historial MHL", "all": "todo"}
+SCOPE_WORD = {"clips": "timeline clips", "mhl": "MHL history", "all": "everything"}
 
 
 def mhl_comment(job):
-    """comment del MHL raíz: qué se copió (D16) y las tarjetas copiadas a medias (D11, «; parcial: A001 2/37»); un MHL
-    de varias tarjetas limitado a las usadas, por tarjetas (D20, «; parcial: DIA_03 2/4 tarjetas»)."""
+    """comment del MHL raíz: qué se copió (D16) y las tarjetas copiadas a medias (D11, «; partial: A001 2/37»); un MHL
+    de varias tarjetas limitado a las usadas, por tarjetas (D20, «; partial: DIA_03 2/4 cards»)."""
     bigs = [] if job.get("whole_mhl") else job.get("big_mhl") or []
     skip = {b.get("anchor_rel") for b in bigs}
     partial = ", ".join([f"{b.get('anchor_rel')} {len(b['cards']) - len(set(b['missing_folders']) & set(b['cards']))}"
-                         f"/{len(b['cards'])} tarjetas" for b in bigs]
+                         f"/{len(b['cards'])} cards" for b in bigs]
                         + [x for x in [cards_summary({k: v for k, v in (job.get("cards") or {}).items()
                                                       if k not in skip}, only_partial=True)] if x])
     scope = job.get("scope", "clips")
     return (f"MHL MediaManagement: media management {job.get('label', '')}".strip()
-            + f"; qué copiar: {SCOPE_WORD.get(scope, scope)}" + (" (todo el MHL)" if job.get("whole_mhl") else "")
-            + (f"; parcial: {partial}" if partial else ""))
+            + f"; scope: {SCOPE_WORD.get(scope, scope)}" + (" (whole MHL)" if job.get("whole_mhl") else "")
+            + (f"; partial: {partial}" if partial else ""))
 
 
 def _commit(session, history, dest, job, log):
@@ -1004,17 +1002,17 @@ def _commit(session, history, dest, job, log):
         commit_session(session, os.environ.get("USER") or None, None, None, None, None, mhl_comment(job))
     except Exception:
         import traceback
-        log("\n✗ ERROR escribiendo el MHL\n" + traceback.format_exc())
+        log("\n✗ ERROR writing the MHL\n" + traceback.format_exc())
         written = [os.path.join(d, n) for d, names in _mhl_dirs(history).items() for n in sorted(names - before.get(d, set()))]
         if written:
-            log("  Generaciones escritas antes del error (huérfanas, revisar a mano):")
+            log("  Generations written before the error (orphaned, check by hand):")
             for w in written:
                 log(f"    {os.path.relpath(w, dest)}")
-        return 1, "failed", "✗ Error escribiendo el MHL (ver log)"
+        return 1, "failed", "✗ Error writing the MHL (see log)"
     finally:
         _COMMITTING[0] = False
     if _CANCEL_ASKED[0]:
-        log("Cancelación pedida durante la escritura: el MHL se ha terminado de escribir completo.")
+        log("Cancel requested during the write: the MHL has been written in full.")
     return 0, "done", ""
 
 
@@ -1024,7 +1022,7 @@ def _copy_ascmhl(src, dst, log, card_rel):
     part = dst.with_name(dst.name + ".mhlmm_part")
     if part.exists():
         shutil.rmtree(part)
-        log(f"Borrada copia a medias de un intento anterior: {card_rel}/{part.name}/")
+        log(f"Deleted a partial copy from a previous attempt: {card_rel}/{part.name}/")
     if dst.exists():
         return
     _CURRENT_TMP[0] = part
@@ -1036,7 +1034,7 @@ def _copy_ascmhl(src, dst, log, card_rel):
         raise
     finally:
         _CURRENT_TMP[0] = None
-    log(f"MHL copiado: {card_rel}/ascmhl/")
+    log(f"MHL copied: {card_rel}/ascmhl/")
 
 
 def _broken_ascmhl(dest, cards):
@@ -1055,24 +1053,24 @@ def _work(job, dest, dry, log, st):
     items = job["items"]
     N = len(items)
     log(f"MHL MediaManagement {__version__} — {job.get('label', '')}")
-    log(f"{N} ficheros · origen (raíz común): {job['base']}")
-    log(f"Destino: {dest}{'   [SIMULACIÓN]' if dry else ''}")
+    log(f"{N} files · source (common root): {job['base']}")
+    log(f"Destination: {dest}{'   [DRY RUN]' if dry else ''}")
     scope = job.get("scope", "clips")
-    log(f"Qué copiar: {SCOPE_LABEL.get(scope, scope)}")
+    log(f"What to copy: {SCOPE_LABEL.get(scope, scope)}")
     for b in job.get("big_mhl") or []:  # D19/D20
         log(big_mhl_header(b))
     for line in big_mhl_choice(job):
         log(line)
     cards_txt = cards_summary(job.get("cards") or {})
     if cards_txt:  # D11: cuántos clips de cada tarjeta y cuáles van a medias
-        log(f"Tarjetas: {cards_txt}")
+        log(f"Cards: {cards_txt}")
     notes = [n for rel, c in sorted((job.get("cards") or {}).items()) for n in card_notes(rel, c)]
     for n in notes:  # D16: lo que está en la tarjeta y no en el MHL del DIT no se copia
-        log(f"  aviso: {n}")
+        log(f"  warning: {n}")
     log("")
 
     if job.get("pause"):  # solo el autotest: tiempo en «running» para comprobar el reenganche
-        st.set(force=True, phase="Autotest (pausa)")
+        st.set(force=True, phase="Self-test (pause)")
         time.sleep(min(float(job["pause"]), 10))
     prog = {"bytes": 0, "t0": time.time()}
 
@@ -1082,8 +1080,8 @@ def _work(job, dest, dry, log, st):
         st.set(bytes=prog["bytes"], speed=prog["bytes"] / el)
 
     # ---------------- 1 · COPIA ----------------
-    log("━━━ 1/3 COPIA ━━━")
-    st.set(force=True, phase="Copia", n=0, total=N, bytes=0, bytes_total=0)
+    log("━━━ 1/3 COPY ━━━")
+    st.set(force=True, phase="Copy", n=0, total=N, bytes=0, bytes_total=0)
     errors = []
     for n, it in enumerate(items, 1):
         src, dst = Path(it["src"]), dest / it["rel"]
@@ -1094,12 +1092,12 @@ def _work(job, dest, dry, log, st):
             copied, sz = copy_file(src, dst, on_bytes)
             it["size"] = sz
         except OSError as e:
-            log(f"✗ ERROR copiando {it['rel']}: {e}"); errors.append(it["rel"]); it["error"] = True; continue
+            log(f"✗ ERROR copying {it['rel']}: {e}"); errors.append(it["rel"]); it["error"] = True; continue
         if copied or n == N or n % 200 == 0:
-            log(f"[{n}/{N}] {'copiado ' if copied else 'ya existe'} {it['rel']}  ({human(prog['bytes'])})")
+            log(f"[{n}/{N}] {'copied' if copied else 'already exists'} {it['rel']}  ({human(prog['bytes'])})")
     if dry:
-        log("\nSimulación terminada. No se ha copiado nada.")
-        st.set(force=True, state="done", msg="Simulación terminada")
+        log("\nDry run finished. Nothing has been copied.")
+        st.set(force=True, state="done", msg="Dry run finished")
         return 0
 
     cards, legacy_mhls = {}, []
@@ -1116,30 +1114,30 @@ def _work(job, dest, dry, log, st):
                     m = Path(card) / name
                     if not (dcard / name).exists():
                         shutil.copy2(m, dcard / name)
-                        log(f"MHL copiado: {card_rel}/{name}")
+                        log(f"MHL copied: {card_rel}/{name}")
                     legacy_mhls.append((m, dcard / name, f"{card_rel}/{name}"))
         except OSError as e:
-            log(f"✗ ERROR copiando MHL de {card_rel}: {e}"); errors.append(card_rel)
+            log(f"✗ ERROR copying the MHL of {card_rel}: {e}"); errors.append(card_rel)
 
     # ---------------- 2 · VERIFICACIÓN (solo lectura) ----------------
-    log("\n━━━ 2/3 VERIFICACIÓN (solo lectura) ━━━")
+    log("\n━━━ 2/3 VERIFICATION (read-only) ━━━")
     total_v = sum(it.get("size", 0) for it in items if not it.get("error"))
     total_v += sum(it.get("size", 0) for it in items if it["kind"] == "none" and not it.get("error"))  # origen también
     prog["bytes"], prog["t0"] = 0, time.time()
-    st.set(force=True, phase="Verificación", n=0, total=N, bytes=0, bytes_total=total_v, speed=0)
+    st.set(force=True, phase="Verification", n=0, total=N, bytes=0, bytes_total=total_v, speed=0)
     from ascmhl.history import MHLHistory
     try:
         history = MHLHistory.load_from_path(str(dest))
     except Exception as e:  # p. ej. un ascmhl/ con ascmhl_chain.xml pero sin los .mhl (copia antigua a medias)
         bad = _broken_ascmhl(dest, cards)
-        where = f"{bad}/ascmhl" if bad else "ascmhl (raíz o una tarjeta anidada)"
-        log(f"✗ El historial ASC MHL de DEST/{where} está incompleto o dañado: {type(e).__name__}: {e}")
+        where = f"{bad}/ascmhl" if bad else "ascmhl (root or a nested card)"
+        log(f"✗ The ASC MHL history at DEST/{where} is incomplete or damaged: {type(e).__name__}: {e}")
         if bad:
-            log(f"  Borra {dest / bad / 'ascmhl'} y relanza: se vuelve a copiar del origen.")
+            log(f"  Delete {dest / bad / 'ascmhl'} and run again: it is copied again from the source.")
         else:
-            log(f"  Revisa a mano los ascmhl/ de {dest} antes de relanzar.")
-        log("✗ NO se crea el MHL.")
-        st.set(force=True, state="failed", msg=f"✗ ASC MHL incompleto en DEST/{where} — MHL NO creado")
+            log(f"  Check the ascmhl/ folders in {dest} by hand before running again.")
+        log("✗ The MHL is NOT created.")
+        st.set(force=True, state="failed", msg=f"✗ Incomplete ASC MHL at DEST/{where} — MHL NOT created")
         return 1
     legacy_cache, nfc_cache, fails, records = {}, {}, [], []
     ok_count = 0
@@ -1147,7 +1145,7 @@ def _work(job, dest, dry, log, st):
         if kind == "legacy":
             legacy_cache[card] = legacy_read(card)
             for name, why in legacy_cache[card][1]:
-                fails.append(f"MHL legacy {card_rel}/{name} ilegible: {why}")
+                fails.append(f"legacy MHL {card_rel}/{name} unreadable: {why}")
     for n, it in enumerate(items, 1):
         st.set(n=n, file=it["rel"], fails=len(fails))
         if it.get("error"):
@@ -1162,10 +1160,11 @@ def _work(job, dest, dry, log, st):
                                                                for m in hl.media_hashes], nfc_cache, id(child))
                 if alt:  # D17: el MHL del DIT trae la ruta en la otra forma; el MHL nuevo lleva la de disco (H10)
                     rel, fmts = alt, child.find_existing_hash_formats_for_path(alt) or []
-                    log(f"  aviso: el MHL de origen nombra {it['rel']} en otra forma Unicode (NFC/NFD); se verifica"
-                        " igual, pero un verificador externo puede darlo por «missing», como al origen")
+                    log(f"  warning: the source MHL names {it['rel']} in another Unicode form (NFC/NFD); it is"
+                        " verified anyway, but an external verifier may report it as “missing”, as it does for the"
+                        " source")
                 if not fmts:
-                    fails.append(f"{it['rel']}: no figura en el MHL de origen"); continue
+                    fails.append(f"{it['rel']}: not in the source MHL"); continue
                 try:
                     got = hash_asc(dst, set(fmts) | {ROOT_HASH}, on_bytes)
                 except ValueError as e:
@@ -1173,7 +1172,7 @@ def _work(job, dest, dry, log, st):
                 # comparación exacta, como la referencia: un hex en mayúsculas en el MHL del DIT no vale (H7)
                 bad = [f for f in fmts if child.find_first_hash_entry_for_path(rel, f).hash_string != got[f]]
                 if bad:
-                    fails.append(f"{it['rel']}: hash distinto al del MHL de origen ({', '.join(bad)})"); continue
+                    fails.append(f"{it['rel']}: hash differs from the source MHL ({', '.join(bad)})"); continue
                 rec = {f: got[f] for f in fmts}
                 rec[ROOT_HASH] = got[ROOT_HASH]
             elif it["kind"] == "legacy":
@@ -1182,44 +1181,44 @@ def _work(job, dest, dry, log, st):
                 if key not in ref:  # D17: el .mhl puede traer la ruta en la otra forma Unicode
                     key = nfc_match(key, lambda: ref, nfc_cache, ("legacy", it["card"])) or key
                 if key not in ref:
-                    fails.append(f"{it['rel']}: no figura en el MHL legacy de origen"); continue
+                    fails.append(f"{it['rel']}: not in the source legacy MHL"); continue
                 e = ref[key]
                 if e["size"] is not None and e["size"] != stt.st_size:  # D18: aunque el hash coincida
-                    fails.append(f"{it['rel']}: tamaño distinto al del MHL legacy ({stt.st_size} ≠ {e['size']})"); continue
+                    fails.append(f"{it['rel']}: size differs from the legacy MHL ({stt.st_size} ≠ {e['size']})"); continue
                 algos = sorted(e["hashes"])
                 if not algos:
                     if not e["null"]:
-                        fails.append(f"{it['rel']}: el MHL legacy no trae ningún hash soportado"); continue
+                        fails.append(f"{it['rel']}: the legacy MHL has no supported hash"); continue
                     got_dst = hash_file(dst, {ROOT_HASH}, on_bytes)[ROOT_HASH]  # D18: <null> = solo tamaño
                     if got_dst != hash_file(it["src"], {ROOT_HASH}, on_bytes)[ROOT_HASH]:
-                        fails.append(f"{it['rel']}: destino distinto del origen"); continue
-                    log(f"  aviso: el MHL legacy no deja hash para {it['rel']}: verificado origen contra destino")
+                        fails.append(f"{it['rel']}: destination differs from source"); continue
+                    log(f"  warning: the legacy MHL leaves no hash for {it['rel']}: verified source against destination")
                     rec = {ROOT_HASH: got_dst}
                 else:  # D18: todos los hashes soportados de la entrada
                     got = hash_file(dst, set(algos) | {ROOT_HASH}, on_bytes)
                     bad = [a for a in algos if not legacy_match(a, e["hashes"][a], got[a])]
                     if bad:
-                        fails.append(f"{it['rel']}: hash distinto al del MHL legacy ({', '.join(bad)})"); continue
+                        fails.append(f"{it['rel']}: hash differs from the legacy MHL ({', '.join(bad)})"); continue
                     rec = {ROOT_HASH: got[ROOT_HASH]}
             else:
                 got_dst = hash_file(dst, {ROOT_HASH}, on_bytes)[ROOT_HASH]
                 got_src = hash_file(it["src"], {ROOT_HASH}, on_bytes)[ROOT_HASH]
                 if got_dst != got_src:
-                    fails.append(f"{it['rel']}: destino distinto del origen"); continue
+                    fails.append(f"{it['rel']}: destination differs from source"); continue
                 rec = {ROOT_HASH: got_dst}
         except OSError as e:
             fails.append(f"{it['rel']}: {e}"); continue
         records.append((str(dst), stt.st_size, datetime.datetime.fromtimestamp(stt.st_mtime), rec))
         ok_count += 1
         if n % 200 == 0 or n == N:
-            log(f"[{n}/{N}] verificados OK: {ok_count}  fallos: {len(fails)}")
+            log(f"[{n}/{N}] verified OK: {ok_count}  failures: {len(fails)}")
     # los .mhl legacy copiados entran en el MHL raíz como ficheros (si no, la verificación de la referencia los
     # da por «new file»); antes, copia contra origen
     for m, dm, rel in legacy_mhls:
         try:
             got = hash_file(dm, {ROOT_HASH})[ROOT_HASH]
             if got != hash_file(m, {ROOT_HASH})[ROOT_HASH]:
-                fails.append(f"{rel}: el MHL legacy copiado no es igual al de origen"); continue
+                fails.append(f"{rel}: the copied legacy MHL is not identical to the source one"); continue
             stt = dm.stat()
         except OSError as e:
             fails.append(f"{rel}: {e}"); continue
@@ -1235,19 +1234,19 @@ def _work(job, dest, dry, log, st):
             prev = {f: hist.find_first_hash_entry_for_path(hrel, f) for f in rec}
             bad = [f for f, h in rec.items() if prev[f] is not None and prev[f].hash_string != h]
             if bad:
-                fails.append(f"{os.path.relpath(path, dest)}: hash distinto al de una generación anterior del destino"
-                             f" ({', '.join(bad)})")
+                fails.append(f"{os.path.relpath(path, dest)}: hash differs from a previous generation in the"
+                             f" destination ({', '.join(bad)})")
     for f in fails:
         log(f"  ✗ {f}")
 
     # ---------------- 3 · MHL DEL MEDIA MANAGEMENT ----------------
-    log("\n━━━ 3/3 MHL DEL MEDIA MANAGEMENT ━━━")
+    log("\n━━━ 3/3 MEDIA MANAGEMENT MHL ━━━")
     st.set(force=True, phase="MHL", fails=len(fails))
     if fails or errors:
-        log(f"✗ NO se crea el MHL: {len(fails)} fallos de verificación, {len(errors)} errores de copia.")
-        log("  Borra en destino los ficheros afectados y relanza: se recopian y se vuelve a verificar.")
+        log(f"✗ The MHL is NOT created: {len(fails)} verification failures, {len(errors)} copy errors.")
+        log("  Delete the affected files in the destination and run again: they are copied and verified again.")
         result, state = 1, "failed"
-        msg = f"✗ {len(fails)} fallos, {len(errors)} errores de copia — MHL NO creado"
+        msg = f"✗ {len(fails)} failures, {len(errors)} copy errors — MHL NOT created"
     else:
         from ascmhl.generator import MHLGenerationCreationSession
         session = MHLGenerationCreationSession(history)
@@ -1260,26 +1259,26 @@ def _work(job, dest, dry, log, st):
                     rejected.append(f"{os.path.relpath(path, dest)} ({fmt})")
         if rejected:  # H9: commitear escribiría action="failed"
             for r in rejected:
-                log(f"  ✗ ascmhl rechaza el hash: {r}")
-            log("✗ NO se crea el MHL: ascmhl rechaza hashes que la verificación había dado por buenos.")
+                log(f"  ✗ ascmhl rejects the hash: {r}")
+            log("✗ The MHL is NOT created: ascmhl rejects hashes that the verification had accepted.")
             result, state = 1, "failed"
-            msg = f"✗ ascmhl rechaza {len(rejected)} hashes — MHL NO creado"
+            msg = f"✗ ascmhl rejects {len(rejected)} hashes — MHL NOT created"
         else:
             result, state, msg = _commit(session, history, dest, job, log)
             if result == 0:
-                log(f"✓ ASC MHL creado en {dest}/ascmhl/ ({len(records)} ficheros, {ROOT_HASH})")
-                msg = f"✓ {ok_count}/{N} verificados · ASC MHL creado"
+                log(f"✓ ASC MHL created in {dest}/ascmhl/ ({len(records)} files, {ROOT_HASH})")
+                msg = f"✓ {ok_count}/{N} verified · ASC MHL created"
 
-    log("\n================ RESUMEN ================")
-    log(f"Copiados/verificados OK: {ok_count}/{N}   Fallos: {len(fails)}   Errores de copia: {len(errors)}")
+    log("\n================ SUMMARY ================")
+    log(f"Copied/verified OK: {ok_count}/{N}   Failures: {len(fails)}   Copy errors: {len(errors)}")
     if cards_txt:
-        log(f"Tarjetas: {cards_txt}")
+        log(f"Cards: {cards_txt}")
         for n in notes:
-            log(f"  aviso: {n}")
+            log(f"  warning: {n}")
         if any(is_partial(c) for c in job["cards"].values()):
-            log("  Tarjetas parciales: un verificador externo (ascmhl-debug verify, Silverstack…) dará por «missing» los"
-                " clips que no se han copiado; es cierto. «Respetar historial MHL» (--scope mhl) copia todo lo que"
-                " atestigua el MHL del DIT.")
+            log("  Partial cards: an external verifier (ascmhl-debug verify, Silverstack…) will report the clips that"
+                " were not copied as “missing”; that is correct. “Respect MHL history” (--scope mhl) copies"
+                " everything the DIT's MHL attests.")
     st.set(force=True, state=state, msg=msg, fails=len(fails))
     return result
 
@@ -1289,9 +1288,9 @@ def _work(job, dest, dry, log, st):
 # ======================================================================
 
 def safe_name(s):
-    """Nombre de carpeta sin separadores; nunca vacío ni solo puntos («.», «..» → PROYECTO)."""
+    """Nombre de carpeta sin separadores; nunca vacío ni solo puntos («.», «..» → PROJECT)."""
     n = re.sub(r'[/:\\]+', "_", s or "").strip()
-    return n if n.strip(".") else "PROYECTO"
+    return n if n.strip(".") else "PROJECT"
 
 
 def compute_dest(base_text, sub_checked, proj_name):
@@ -1305,7 +1304,7 @@ def compute_dest(base_text, sub_checked, proj_name):
 
 
 def install_hint():
-    return f"Instala con: pip3 install 'ascmhl=={ASCMHL_VERSION}' con Python ≥ 3.11 (ver install.sh)."
+    return f"Install with: pip3 install 'ascmhl=={ASCMHL_VERSION}' with Python ≥ 3.11 (see install.sh)."
 
 
 def check_worker_python(py):
@@ -1314,13 +1313,13 @@ def check_worker_python(py):
     try:
         r = subprocess.run([py, "-c", code], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
     except Exception as e:
-        return f"No puedo ejecutar el Python de ascmhl ({py}): {e}. {install_hint()}"
+        return f"Cannot run the Python of ascmhl ({py}): {e}. {install_hint()}"
     if r.returncode != 0:
-        why = ((r.stderr or "").strip().splitlines() or ["sin salida"])[-1]
-        return f"El Python de ascmhl ({py}) no puede importar ascmhl/xxhash: {why}. {install_hint()}"
+        why = ((r.stderr or "").strip().splitlines() or ["no output"])[-1]
+        return f"The Python of ascmhl ({py}) cannot import ascmhl/xxhash: {why}. {install_hint()}"
     found = ((r.stdout or "").strip().splitlines() or ["?"])[-1]
     if found != ASCMHL_VERSION:
-        return f"El Python de ascmhl ({py}) tiene ascmhl {found}; hace falta {ASCMHL_VERSION}. {install_hint()}"
+        return f"The Python of ascmhl ({py}) has ascmhl {found}; {ASCMHL_VERSION} is required. {install_hint()}"
     return None
 
 
@@ -1330,10 +1329,10 @@ def launch_worker(job):
     try:
         ascmhl = find_ascmhl()
         if not ascmhl:
-            return None, f"No encuentro ascmhl. {install_hint()}"
+            return None, f"ascmhl not found. {install_hint()}"
         py = python_for(ascmhl) or shutil.which("python3")
         if not py:
-            return None, f"No sé qué Python usa {ascmhl}. {install_hint()}"
+            return None, f"Cannot tell which Python {ascmhl} uses. {install_hint()}"
         why = check_worker_python(py)
         if why:
             return None, why
@@ -1404,7 +1403,7 @@ def job_outcome(d, proc_done, status_path, stderr_path):
         d = read_status(status_path) or d
         st_ = d.get("state", "running")
         if st_ == "running":
-            return "failed", "El proceso terminó sin estado final (ver log)", tail(stderr_path, 20) if stderr_path else ""
+            return "failed", "The process ended without a final status (see log)", tail(stderr_path, 20) if stderr_path else ""
     if st_ == "running":
         return "running", d.get("msg", ""), ""
     return st_, d.get("msg") or st_, ""
@@ -1434,7 +1433,7 @@ def find_running_job():
                 return {"pid": d["pid"], "proc": None, "status": str(sp),
                         "log": str(LOG_DIR / f"mhl_mediamanagement_{stamp}.log"),
                         "stderr": str(WORK_DIR / f"stderr_{stamp}.txt")}
-            d.update(state="failed", msg="El proceso ya no existe")
+            d.update(state="failed", msg="The process no longer exists")
             _write_status(sp, d)
         except Exception:
             continue
@@ -1494,20 +1493,20 @@ def worker_script():
 def diagnostics(resolve=None, fu=None, ui=None, ticks=None, home=None):
     """Líneas «clave: valor» del entorno en el que corre el script; ✓ bien, ✗ problema, sin marca = dato.
     Función pura (sin Resolve también): la usan --diag y el botón «Diagnóstico»."""
-    out = [f"versión: MHL MediaManagement {__version__}"]
+    out = [f"version: MHL MediaManagement {__version__}"]
 
     def sec(fn):
         try:
             fn()
         except Exception as e:
-            out.append(f"✗ diagnóstico interno: {type(e).__name__}: {e}")
+            out.append(f"✗ internal diagnostics: {type(e).__name__}: {e}")
 
     def script():
         me = globals().get("__file__")
         out.append(_ok(bool(me and os.path.exists(me)), "__file__", repr(me)))
-        out.append(f"INSTALL_PATH: {INSTALL_PATH} (existe: {'sí' if INSTALL_PATH.exists() else 'no'})")
+        out.append(f"INSTALL_PATH: {INSTALL_PATH} (exists: {'yes' if INSTALL_PATH.exists() else 'no'})")
         ws = worker_script()
-        out.append(_ok(os.path.exists(ws), "script del worker", ws))
+        out.append(_ok(os.path.exists(ws), "worker script", ws))
 
     def env():
         out.append(f"sys.version: {sys.version.splitlines()[0]}")
@@ -1515,14 +1514,14 @@ def diagnostics(resolve=None, fu=None, ui=None, ticks=None, home=None):
         out.append(f"PATH: {os.environ.get('PATH')}")
         for k in ("PYTHONHOME", "PYTHONPATH"):
             v = os.environ.get(k)
-            out.append(f"{k}: {v!r}" + ("  (lo hereda el worker)" if v else ""))
+            out.append(f"{k}: {v!r}" + ("  (inherited by the worker)" if v else ""))
         out.append(f"TMPDIR: {os.environ.get('TMPDIR')!r} · tempfile: {tempfile.gettempdir()}")
-        out.append(f"codificación: fs {sys.getfilesystemencoding()} · preferida {locale.getpreferredencoding(False)}")
+        out.append(f"encoding: fs {sys.getfilesystemencoding()} · preferred {locale.getpreferredencoding(False)}")
 
     def ascmhl():
         out.append(f"which ascmhl: {shutil.which('ascmhl')!r}")
         for c in ascmhl_candidates(home):
-            out.append(f"candidato: {c} (existe: {'sí' if os.path.exists(c) else 'no'})")
+            out.append(f"candidate: {c} (exists: {'yes' if os.path.exists(c) else 'no'})")
         exe = find_ascmhl(home)
         out.append(_ok(bool(exe), "find_ascmhl", exe))
         if not exe:
@@ -1531,7 +1530,7 @@ def diagnostics(resolve=None, fu=None, ui=None, ticks=None, home=None):
         out.append(_ok(bool(py), "python_for", py))
         if py:
             why = check_worker_python(py)
-            out.append(_ok(not why, "Python del worker", why or f"importa ascmhl {ASCMHL_VERSION} y xxhash"))
+            out.append(_ok(not why, "worker Python", why or f"imports ascmhl {ASCMHL_VERSION} and xxhash"))
 
     def dirs():
         for name, d in (("WORK_DIR", WORK_DIR), ("LOG_DIR", LOG_DIR)):
@@ -1539,7 +1538,7 @@ def diagnostics(resolve=None, fu=None, ui=None, ticks=None, home=None):
                 d.mkdir(parents=True, exist_ok=True)
                 with tempfile.NamedTemporaryFile(dir=d, prefix=".diag_"):
                     pass
-                out.append(_ok(True, name, f"{d} (existe, escribible)"))
+                out.append(_ok(True, name, f"{d} (exists, writable)"))
             except Exception as e:
                 out.append(_ok(False, name, f"{d} — {type(e).__name__}: {e}"))
 
@@ -1556,7 +1555,7 @@ def diagnostics(resolve=None, fu=None, ui=None, ticks=None, home=None):
             except Exception as e:
                 out.append(_ok(False, "ui.Timer", f"{type(e).__name__}: {e}"))
         if ticks is not None:
-            out.append(f"temporizador (disparos desde que se abrió la ventana): {dict(ticks) or 'ninguno'}")
+            out.append(f"timer (ticks since the window opened): {dict(ticks) or 'none'}")
 
     def statuses():
         try:
@@ -1564,11 +1563,11 @@ def diagnostics(resolve=None, fu=None, ui=None, ticks=None, home=None):
         except Exception:
             sps = []
         if not sps:
-            out.append("status recientes: ninguno")
+            out.append("recent statuses: none")
         for sp in sps:
             d = read_status(sp)
             out.append(f"status: {sp.name} · {d.get('state', '?')} · {d.get('phase', '')} · {d.get('msg', '')}"
-                       f" · pid {d.get('pid')} · versión {d.get('version', '?')}")
+                       f" · pid {d.get('pid')} · version {d.get('version', '?')}")
 
     for fn in (script, env, ascmhl, dirs, res, statuses):
         sec(fn)
@@ -1602,7 +1601,7 @@ def selftest_start(log=print, pause=SELFTEST_PAUSE_S):
     try:
         exe = find_ascmhl()
         if not exe:
-            _say(ctx, f"✗ ascmhl: no encontrado. {install_hint()}")
+            _say(ctx, f"✗ ascmhl: not found. {install_hint()}")
             return ctx
         ctx["ascmhl"] = exe
         root = Path(tempfile.mkdtemp(prefix="mhlmm_autotest_", dir=os.environ.get("TMPDIR") or None))
@@ -1616,13 +1615,13 @@ def selftest_start(log=print, pause=SELFTEST_PAUSE_S):
         if r.returncode:
             _say(ctx, f"✗ ascmhl create: rc {r.returncode} · {((r.stderr or r.stdout).strip().splitlines() or [''])[-1]}")
             return ctx
-        _say(ctx, f"✓ tarjeta sintética A001 (3 ficheros) con ASC MHL · {root}")
+        _say(ctx, f"✓ synthetic card A001 (3 files) with ASC MHL · {root}")
         files = sorted(str(p) for p in (card / "CLIP").iterdir()) + [str(loose)]
         plan = build_plan(scan(files, log=lambda *_: None), scope="all")
         dest = root / "dest"
         why = dest_conflict(plan, dest)
         if why:
-            _say(ctx, f"✗ destino: {why}")
+            _say(ctx, f"✗ destination: {why}")
             return ctx
         job_d = job_from_plan(plan, dest, False, "autotest")
         job_d["pause"] = pause
@@ -1631,9 +1630,9 @@ def selftest_start(log=print, pause=SELFTEST_PAUSE_S):
             _say(ctx, f"✗ launch_worker: {err}")
             return ctx
         ctx.update(job=job, dest=dest)
-        _say(ctx, f"✓ worker lanzado: pid {job['pid']} · status {job['status']} · log {job['log']}")
+        _say(ctx, f"✓ worker launched: pid {job['pid']} · status {job['status']} · log {job['log']}")
     except Exception as e:
-        _say(ctx, f"✗ autotest: {type(e).__name__}: {e}")
+        _say(ctx, f"✗ self-test: {type(e).__name__}: {e}")
     return ctx
 
 
@@ -1642,8 +1641,8 @@ def selftest_reattach(ctx):
     pid = ctx["job"]["pid"]
     found = find_running_job()
     ctx["reattach"] = bool(found and found["pid"] == pid and found["status"] == ctx["job"]["status"])
-    _say(ctx, f"✓ reenganche: ok (find_running_job → pid {pid})" if ctx["reattach"] else
-         f"✗ reenganche: find_running_job → {found and found['pid']} (esperado pid {pid})")
+    _say(ctx, f"✓ reattach: ok (find_running_job → pid {pid})" if ctx["reattach"] else
+         f"✗ reattach: find_running_job → {found and found['pid']} (expected pid {pid})")
 
 
 def selftest_finish(ctx, state, msg, keep=False):
@@ -1651,11 +1650,11 @@ def selftest_finish(ctx, state, msg, keep=False):
     limpieza del temporal salvo keep → (ok, líneas)."""
     rc = None
     if ctx["job"]:
-        _say(ctx, _ok(state == "done", "trabajo", f"{state} — {msg}"))
+        _say(ctx, _ok(state == "done", "job", f"{state} — {msg}"))
     if state == "done" and ctx["dest"]:
         dbg = Path(ctx["ascmhl"]).with_name("ascmhl-debug")
         if not dbg.exists():
-            _say(ctx, f"✗ ascmhl-debug: no está junto a {ctx['ascmhl']}")
+            _say(ctx, f"✗ ascmhl-debug: not next to {ctx['ascmhl']}")
         else:
             try:
                 r = subprocess.run([str(dbg), "verify", str(ctx["dest"])], stdin=subprocess.DEVNULL,
@@ -1668,14 +1667,14 @@ def selftest_finish(ctx, state, msg, keep=False):
             except Exception as e:
                 _say(ctx, f"✗ ascmhl-debug verify: {type(e).__name__}: {e}")
     if ctx["reattach"] is None and ctx["job"]:
-        _say(ctx, "reenganche: no comprobado (el trabajo terminó antes de verlo en marcha)")
+        _say(ctx, "reattach: not checked (the job finished before it was seen running)")
     ok = state == "done" and rc == 0 and ctx["reattach"] is not False
     if ctx["root"]:
         if keep:
-            _say(ctx, f"temporal conservado (--keep): {ctx['root']}")
+            _say(ctx, f"temp folder kept (--keep): {ctx['root']}")
         else:
             shutil.rmtree(ctx["root"], ignore_errors=True)
-    _say(ctx, "✓ AUTOTEST OK" if ok else "✗ AUTOTEST FALLIDO")
+    _say(ctx, "✓ SELF-TEST OK" if ok else "✗ SELF-TEST FAILED")
     return ok, ctx["lines"]
 
 
@@ -1685,7 +1684,7 @@ def selftest(log=print, keep=False, timeout=120, pause=SELFTEST_PAUSE_S):
     ctx = selftest_start(log, pause)
     job = ctx["job"]
     if not job:
-        return selftest_finish(ctx, "failed", "no se pudo lanzar", keep)
+        return selftest_finish(ctx, "failed", "could not be launched", keep)
     t0 = time.time()
     while True:
         d = read_status(job["status"])
@@ -1697,11 +1696,11 @@ def selftest(log=print, keep=False, timeout=120, pause=SELFTEST_PAUSE_S):
         if time.time() - t0 > timeout:
             job["proc"].kill()
             job["proc"].wait()
-            state, msg, extra = "failed", f"sin terminar en {timeout} s", ""
+            state, msg, extra = "failed", f"not finished after {timeout} s", ""
             break
         time.sleep(0.2)
     if ctx["reattach"] is None:
-        _say(ctx, "✗ reenganche: el estado nunca se vio «running»")
+        _say(ctx, "✗ reattach: the status was never seen as “running”")
         ctx["reattach"] = False
     if extra:
         _say(ctx, extra)
@@ -1722,51 +1721,51 @@ def gui(resolve, bmd):
         n_tl = int(project.GetTimelineCount())
     except Exception:
         n_tl = "?"
-    glog(f"ventana abierta · MHL MediaManagement {__version__} · proyecto {proj_name!r} · {n_tl} timelines"
+    glog(f"window opened · MHL MediaManagement {__version__} · project {proj_name!r} · {n_tl} timelines"
          f" · __file__ {globals().get('__file__')!r} · Python {sys.version.split()[0]} ({sys.executable})")
 
     win = disp.AddWindow(
-        {"ID": "MHLMM", "WindowTitle": f"MHL MediaManagement {__version__} — media management con MHL", "Geometry": [200, 100, 900, 760]},
+        {"ID": "MHLMM", "WindowTitle": f"MHL MediaManagement {__version__} — media management with MHL", "Geometry": [200, 100, 900, 760]},
         ui.VGroup({"Spacing": 6}, [
-            ui.Label({"Text": "<b>1 · Timelines</b> (selección múltiple con ⌘/⇧)", "Weight": 0}),
+            ui.Label({"Text": "<b>1 · Timelines</b> (multiple selection with ⌘/⇧)", "Weight": 0}),
             ui.Tree({"ID": "TL", "SelectionMode": "ExtendedSelection", "HeaderHidden": True,
                      "ColumnCount": 2, "Weight": 1}),
             ui.HGroup({"Weight": 0}, [
-                ui.Label({"Text": "<b>2 · Destino:</b>", "Weight": 0}),
-                ui.LineEdit({"ID": "Dest", "PlaceholderText": "Elige carpeta de destino…"}),
-                ui.Button({"ID": "Browse", "Text": "Elegir…", "Weight": 0}),
+                ui.Label({"Text": "<b>2 · Destination:</b>", "Weight": 0}),
+                ui.LineEdit({"ID": "Dest", "PlaceholderText": "Choose a destination folder…"}),
+                ui.Button({"ID": "Browse", "Text": "Browse…", "Weight": 0}),
             ]),
             ui.HGroup({"Weight": 0}, [
-                ui.CheckBox({"ID": "Sub", "Text": f"Subcarpeta con el nombre del proyecto ({safe_name(proj_name)})",
+                ui.CheckBox({"ID": "Sub", "Text": f"Subfolder named after the project ({safe_name(proj_name)})",
                              "Checked": True}),
             ]),
             ui.HGroup({"Weight": 0}, [
-                ui.Label({"Text": "<b>Qué copiar:</b>", "Weight": 0}),
+                ui.Label({"Text": "<b>What to copy:</b>", "Weight": 0}),
                 ui.ComboBox({"ID": "Scope"}),
-                ui.CheckBox({"ID": "DryRun", "Text": "Simulación (no copia)", "Checked": False, "Weight": 0}),
-                ui.Button({"ID": "Prepare", "Text": "3 · Preparar", "Weight": 0}),
+                ui.CheckBox({"ID": "DryRun", "Text": "Dry run (no copy)", "Checked": False, "Weight": 0}),
+                ui.Button({"ID": "Prepare", "Text": "3 · Prepare", "Weight": 0}),
             ]),
             ui.Label({"ID": "ScopeHelp", "Weight": 0, "WordWrap": True, "Text": SCOPE_HELP["clips"]}),
-            ui.Label({"ID": "Info", "Weight": 0, "WordWrap": True, "Text": "Elige timelines y pulsa Preparar."}),
+            ui.Label({"ID": "Info", "Weight": 0, "WordWrap": True, "Text": "Choose timelines and press Prepare."}),
             ui.Label({"ID": "Base", "Weight": 0, "WordWrap": True}),
             ui.Label({"ID": "Progress", "Weight": 0, "WordWrap": True, "Text": ""}),
             ui.TextEdit({"ID": "Preview", "ReadOnly": True, "Weight": 3,
                          "Font": ui.Font({"Family": "Menlo", "PixelSize": 11})}),
             ui.HGroup({"Weight": 0}, [  # D19/D20: confirmación en línea (UIManager no trae diálogos); oculta hasta Copiar
                 ui.Label({"ID": "ConfirmText", "WordWrap": True, "Hidden": True}),
-                ui.Button({"ID": "ConfirmAll", "Text": "Copiar todo el MHL", "Weight": 0, "Hidden": True}),
-                ui.Button({"ID": "ConfirmUsed", "Text": "Solo las carpetas usadas", "Weight": 0, "Hidden": True}),
-                ui.Button({"ID": "ConfirmCancel", "Text": "Cancelar", "Weight": 0, "Hidden": True}),
+                ui.Button({"ID": "ConfirmAll", "Text": "Copy the whole MHL", "Weight": 0, "Hidden": True}),
+                ui.Button({"ID": "ConfirmUsed", "Text": "Only the used folders", "Weight": 0, "Hidden": True}),
+                ui.Button({"ID": "ConfirmCancel", "Text": "Cancel", "Weight": 0, "Hidden": True}),
             ]),
             ui.Label({"ID": "ConfirmHelp", "Weight": 0, "WordWrap": True, "Hidden": True}),  # D20: consecuencias
             ui.HGroup({"Weight": 0}, [
                 ui.Label({"ID": "Status", "Text": ""}),
-                ui.Button({"ID": "Run", "Text": "4 · Copiar y verificar", "Weight": 0, "Enabled": False}),
-                ui.Button({"ID": "Refresh", "Text": "Actualizar", "Weight": 0}),
-                ui.Button({"ID": "Diag", "Text": "Diagnóstico", "Weight": 0}),
-                ui.Button({"ID": "Selftest", "Text": "Autotest", "Weight": 0}),
-                ui.Button({"ID": "Cancel", "Text": "Cancelar", "Weight": 0, "Enabled": False}),
-                ui.Button({"ID": "Close", "Text": "Cerrar", "Weight": 0}),
+                ui.Button({"ID": "Run", "Text": "4 · Copy and verify", "Weight": 0, "Enabled": False}),
+                ui.Button({"ID": "Refresh", "Text": "Refresh", "Weight": 0}),
+                ui.Button({"ID": "Diag", "Text": "Diagnostics", "Weight": 0}),
+                ui.Button({"ID": "Selftest", "Text": "Self-test", "Weight": 0}),
+                ui.Button({"ID": "Cancel", "Text": "Cancel", "Weight": 0, "Enabled": False}),
+                ui.Button({"ID": "Close", "Text": "Close", "Weight": 0}),
             ]),
         ]))
     itm = win.GetItems()
@@ -1776,7 +1775,7 @@ def gui(resolve, bmd):
     try:
         itm["Scope"].AddItems(labels)
     except Exception as e:
-        glog(f"ComboBox.AddItems falla ({type(e).__name__}: {e}); se usa AddItem")
+        glog(f"ComboBox.AddItems fails ({type(e).__name__}: {e}); AddItem is used")
         for t in labels:
             itm["Scope"].AddItem(t)
     itm["Scope"].CurrentIndex = 0
@@ -1808,18 +1807,18 @@ def gui(resolve, bmd):
             return
         n = plan_counts(plan)
         n_partial = sum(is_partial(c) for c in plan["cards"].values())
-        itm["Info"].Text = (f"<b>{state['label']}</b> — {len(plan['items'])} ficheros · "
-                            f"ASC MHL: {n['asc']} · MHL legacy: {n['legacy']} · sin MHL: {n['none']}"
-                            + (f" · <b>excluidos (sin MHL): {len(plan['excluded'])}</b>" if plan["excluded"] else "")
-                            + (f" · <b>MHL de nivel superior: {len(plan['big_mhl'])}</b>" if plan["big_mhl"] else "")
-                            + (f" · <b>parciales: {n_partial}</b>" if n_partial else "")
-                            + (f" · <font color='#e66'>no encontrados: {len(plan['missing'])}</font>" if plan["missing"] else "")
-                            + (f" · {state['skipped']} items sin fichero (títulos, generadores…)" if state["skipped"] else ""))
-        itm["Base"].Text = ((f"<b>Raíz común:</b> {plan['base']}"
-                             + ("  (varios discos: /Volumes/X → DEST/X)" if str(plan["base"]) == "/" else "")
-                             + "  →  se replica dentro del destino desde aquí") if plan["base"] else "")
+        itm["Info"].Text = (f"<b>{state['label']}</b> — {len(plan['items'])} files · "
+                            f"ASC MHL: {n['asc']} · legacy MHL: {n['legacy']} · no MHL: {n['none']}"
+                            + (f" · <b>excluded (no MHL): {len(plan['excluded'])}</b>" if plan["excluded"] else "")
+                            + (f" · <b>top-level MHL: {len(plan['big_mhl'])}</b>" if plan["big_mhl"] else "")
+                            + (f" · <b>partial: {n_partial}</b>" if n_partial else "")
+                            + (f" · <font color='#e66'>not found: {len(plan['missing'])}</font>" if plan["missing"] else "")
+                            + (f" · {state['skipped']} items without a file (titles, generators…)" if state["skipped"] else ""))
+        itm["Base"].Text = ((f"<b>Common root:</b> {plan['base']}"
+                             + ("  (several disks: /Volumes/X → DEST/X)" if str(plan["base"]) == "/" else "")
+                             + "  →  replicated inside the destination from here") if plan["base"] else "")
         fd = final_dest()
-        itm["Preview"].PlainText = (f"Destino: {fd or '(sin elegir)'}\n" + "\n".join(preview_lines(plan))).strip()
+        itm["Preview"].PlainText = (f"Destination: {fd or '(not chosen)'}\n" + "\n".join(preview_lines(plan))).strip()
         itm["Run"].Enabled = bool(plan["items"])
 
     def set_running(running):
@@ -1833,10 +1832,10 @@ def gui(resolve, bmd):
     def prepare(ev=None):
         sel = tree.SelectedItems() or {}
         idxs = sorted(int(i.Text[1]) for i in sel.values())
-        glog(f"Preparar · SelectedItems {type(sel).__name__} · timelines {idxs}")
+        glog(f"Prepare · SelectedItems {type(sel).__name__} · timelines {idxs}")
         if not idxs:
-            itm["Info"].Text = "Selecciona al menos un timeline."; return
-        itm["Info"].Text = "Leyendo timelines y disco…"
+            itm["Info"].Text = "Select at least one timeline."; return
+        itm["Info"].Text = "Reading timelines and disk…"
         itm["Run"].Enabled = False
         paths, skipped, names = set(), 0, []
         for i in idxs:
@@ -1845,14 +1844,14 @@ def gui(resolve, bmd):
             paths |= p; skipped += s; names.append(tl.GetName())
         t0 = time.time()
         state["scanned"] = scan(sorted(paths), log=lambda *_: None)
-        print(f"MHL MediaManagement: {len(names)} timelines, {len(paths)} media únicos, escaneo {time.time() - t0:.1f} s")
+        print(f"MHL MediaManagement: {len(names)} timelines, {len(paths)} unique media, scan {time.time() - t0:.1f} s")
         state["label"] = ", ".join(names) if len(names) <= 3 else f"{len(names)} timelines"
         state["skipped"] = skipped
         state["plan"] = build_plan(state["scanned"], scope())
         pl = state["plan"]
-        glog(f"Preparar → {len(paths)} rutas, {len(pl['items'])} ficheros, {len(pl['excluded'])} excluidos,"
-             f" {len(pl['missing'])} no encontrados, {len(pl['cards'])} tarjetas, {len(pl['big_mhl'])} MHL de nivel"
-             f" superior · qué copiar {pl['scope']} · {time.time() - t0:.2f} s")
+        glog(f"Prepare → {len(paths)} paths, {len(pl['items'])} files, {len(pl['excluded'])} excluded,"
+             f" {len(pl['missing'])} not found, {len(pl['cards'])} cards, {len(pl['big_mhl'])} top-level"
+             f" MHL · what to copy {pl['scope']} · {time.time() - t0:.2f} s")
         show_confirm(False)
         itm["Progress"].Text = ""
         render()
@@ -1868,7 +1867,7 @@ def gui(resolve, bmd):
 
     def browse(ev):
         d = fu.RequestDir(itm["Dest"].Text or "/Volumes/")
-        glog(f"Elegir… → RequestDir devolvió {d!r}")
+        glog(f"Browse… → RequestDir returned {d!r}")
         if d:
             itm["Dest"].Text = str(d)
             render()
@@ -1889,14 +1888,14 @@ def gui(resolve, bmd):
             try:
                 ph, n, tot = d.get("phase", ""), d.get("n", 0), d.get("total", 0)
                 b, bt, sp = d.get("bytes", 0), d.get("bytes_total", 0), d.get("speed", 0)
-                line = f"<b>{ph}</b>  {n}/{tot} ficheros · {human(b)}"
+                line = f"<b>{ph}</b>  {n}/{tot} files · {human(b)}"
                 if bt:
                     pct = 100 * b / bt
                     eta = (bt - b) / sp if sp > 0 else 0
-                    line += f" de {human(bt)} ({pct:.0f} %) · ETA {int(eta // 60)} min {int(eta % 60)} s"
+                    line += f" of {human(bt)} ({pct:.0f}%) · ETA {int(eta // 60)} min {int(eta % 60)} s"
                 line += f" · {human(sp)}/s"
                 if d.get("fails"):
-                    line += f" · <font color='#e66'>fallos: {d['fails']}</font>"
+                    line += f" · <font color='#e66'>failures: {d['fails']}</font>"
                 if d.get("file"):
                     line += f"<br><small>{d['file']}</small>"
                 itm["Progress"].Text = line
@@ -1921,18 +1920,18 @@ def gui(resolve, bmd):
             selftest_reattach(ctx)
         st_, msg, extra = job_outcome(d, proc_done, job["status"], job.get("stderr"))
         if st_ != "running":
-            glog(f"trabajo terminado: {st_} — {msg} · pid {job.get('pid')} · {job['status']}")
+            glog(f"job finished: {st_} — {msg} · pid {job.get('pid')} · {job['status']}")
             color = {"done": "#5c5", "failed": "#e66", "cancelled": "#ea5"}.get(st_, "#ccc")
             itm["Status"].Text = f"<font color='{color}'><b>{msg}</b></font>"
             if extra:
                 itm["Preview"].PlainText = (itm["Preview"].PlainText or "") + \
-                    "\n\n--- stderr del worker (últimas 20 líneas) ---\n" + extra
+                    "\n\n--- worker stderr (last 20 lines) ---\n" + extra
             if ctx:
                 state["selftest"] = None
                 ok, lines = selftest_finish(ctx, st_, msg)
-                itm["Status"].Text = ("<font color='#5c5'><b>Autotest OK</b></font>" if ok else
-                                      "<font color='#e66'><b>Autotest FALLIDO</b></font>")
-                itm["Preview"].PlainText = ((itm["Preview"].PlainText or "") + "\n\n--- Autotest ---\n"
+                itm["Status"].Text = ("<font color='#5c5'><b>Self-test OK</b></font>" if ok else
+                                      "<font color='#e66'><b>Self-test FAILED</b></font>")
+                itm["Preview"].PlainText = ((itm["Preview"].PlainText or "") + "\n\n--- Self-test ---\n"
                                             + "\n".join(lines))
             state["job"] = None
             if timer:
@@ -1943,7 +1942,7 @@ def gui(resolve, bmd):
         """Destino final si vale para el plan; si no, None (con el motivo en Status)."""
         base_dest = itm["Dest"].Text.strip()
         if not base_dest or not os.path.isdir(os.path.expanduser(base_dest)):
-            itm["Status"].Text = "Elige una carpeta de destino existente."; return None
+            itm["Status"].Text = "Choose an existing destination folder."; return None
         d = compute_dest(base_dest, itm["Sub"].Checked, proj_name)
         why = dest_conflict(plan, d)
         if why:
@@ -1953,7 +1952,7 @@ def gui(resolve, bmd):
     def run(ev):
         plan = state["plan"]
         if not plan or not plan["items"]:
-            itm["Status"].Text = "Nada que copiar. Pulsa Preparar."; return
+            itm["Status"].Text = "Nothing to copy. Press Prepare."; return
         if checked_dest(plan) is None:
             return
         if plan["big_mhl"]:  # D19/D20: un MHL que cubre varias tarjetas y no todas usadas pide elegir
@@ -1969,11 +1968,11 @@ def gui(resolve, bmd):
                 + [f"<b>{_esc(o.split(':', 1)[0])}:</b>{_esc(o.split(':', 1)[1])}" for o in (opt_all, opt_used,
                                                                                             opt_cancel)])
             show_confirm(True)
-            glog(f"D20: confirmación pedida · {len(b)} MHL de nivel superior · todo {len(whole['items'])}"
-                 f" · solo usadas {len(plan['items'])}")
+            glog(f"D20: confirmation requested · {len(b)} top-level MHLs · all {len(whole['items'])}"
+                 f" · used only {len(plan['items'])}")
             for x in b:
                 glog("D20: " + big_mhl_header(x))
-            itm["Status"].Text = "Elige qué copiar del MHL de nivel superior."
+            itm["Status"].Text = "Choose what to copy from the top-level MHL."
             return
         start(plan)
 
@@ -1985,8 +1984,8 @@ def gui(resolve, bmd):
             elif choice == "used":
                 plan = state["plan"]
             else:
-                glog("Elección: cancelar — no se copia nada")
-                itm["Status"].Text = "Cancelado: no se ha copiado nada."
+                glog("Choice: cancel — nothing is copied")
+                itm["Status"].Text = "Cancelled: nothing has been copied."
                 return
             for line in big_mhl_choice(plan):  # D20: la elección con sus cifras
                 glog(line)
@@ -1997,8 +1996,8 @@ def gui(resolve, bmd):
         d = checked_dest(plan)
         if d is None:
             return
-        glog(f"Copiar y verificar · destino {d} · simulación {itm['DryRun'].Checked!r} · qué copiar {plan['scope']}"
-             f" · todo el MHL {plan['whole_mhl']!r}")
+        glog(f"Copy and verify · destination {d} · dry run {itm['DryRun'].Checked!r} · what to copy {plan['scope']}"
+             f" · whole MHL {plan['whole_mhl']!r}")
         d.mkdir(parents=True, exist_ok=True)
         job, err = launch_worker(job_from_plan(plan, d, itm["DryRun"].Checked, state["label"]))
         glog(f"launch_worker → error: {err}" if err else
@@ -2006,16 +2005,16 @@ def gui(resolve, bmd):
         if err:
             itm["Status"].Text = err; return
         state["job"], state["log_size"] = job, -1
-        itm["Status"].Text = "En marcha…"
+        itm["Status"].Text = "Running…"
         set_running(True)
         if timer:
             timer.Start()
         else:
-            itm["Status"].Text = "En marcha… pulsa Actualizar para ver el progreso"
+            itm["Status"].Text = "Running… press Refresh to see the progress"
 
     def cancel(ev):
         job = state["job"]
-        glog(f"Cancelar · trabajo {job and job.get('pid')}")
+        glog(f"Cancel · job {job and job.get('pid')}")
         if not job:
             return
         pid = job.get("pid")
@@ -2023,46 +2022,46 @@ def gui(resolve, bmd):
         if alive and isinstance(pid, int) and pid > 1:  # nunca kill(0)/kill(1) ni a un PID reciclado
             try:
                 os.kill(pid, 15)
-                itm["Status"].Text = "Cancelando…"
+                itm["Status"].Text = "Cancelling…"
             except OSError:
                 pass
 
     def refresh(ev):
-        glog("Actualizar")
+        glog("Refresh")
         poll(ev)
 
     def diag(ev):
-        glog("Diagnóstico")
+        glog("Diagnostics")
         lines = diagnostics(resolve, fu, ui, ticks=ticks.n)
-        lines.append(f"temporizador: {time.time() - ticks.t0:.0f} s con la ventana abierta")
+        lines.append(f"timer: {time.time() - ticks.t0:.0f} s with the window open")
         path, err = write_diag(lines)
-        itm["Preview"].PlainText = "\n".join(lines) + (f"\n\nGuardado en {path}" if path else
-                                                       f"\n\n✗ No se pudo guardar: {err}")
-        itm["Status"].Text = f"Diagnóstico guardado en {path}" if path else "Diagnóstico (sin guardar)"
-        glog(f"Diagnóstico → {path or err}")
+        itm["Preview"].PlainText = "\n".join(lines) + (f"\n\nSaved to {path}" if path else
+                                                       f"\n\n✗ Could not save: {err}")
+        itm["Status"].Text = f"Diagnostics saved to {path}" if path else "Diagnostics (not saved)"
+        glog(f"Diagnostics → {path or err}")
 
     def selftest_gui(ev):
-        glog("Autotest")
+        glog("Self-test")
         if state["job"]:
-            itm["Status"].Text = "Hay un trabajo en marcha: espera a que termine."; return
-        itm["Status"].Text = "Autotest: preparando…"
+            itm["Status"].Text = "A job is running: wait for it to finish."; return
+        itm["Status"].Text = "Self-test: preparing…"
         ctx = selftest_start(log=glog)
         itm["Preview"].PlainText = "\n".join(ctx["lines"])
         if not ctx["job"]:
-            ok, lines = selftest_finish(ctx, "failed", "no se pudo lanzar")
+            ok, lines = selftest_finish(ctx, "failed", "could not be launched")
             itm["Preview"].PlainText = "\n".join(lines)
-            itm["Status"].Text = "<font color='#e66'><b>Autotest FALLIDO</b></font>"
+            itm["Status"].Text = "<font color='#e66'><b>Self-test FAILED</b></font>"
             return
         state["job"], state["log_size"], state["selftest"] = ctx["job"], -1, ctx
         set_running(True)
         if timer:
             timer.Start()
-            itm["Status"].Text = "Autotest en marcha…"
+            itm["Status"].Text = "Self-test running…"
         else:
-            itm["Status"].Text = "Autotest en marcha… pulsa Actualizar para ver el progreso"
+            itm["Status"].Text = "Self-test running… press Refresh to see the progress"
 
     def close(ev):
-        glog("Cerrar")
+        glog("Close")
         disp.ExitLoop()
 
     def logged(kind, cid, fn):
@@ -2102,14 +2101,14 @@ def gui(resolve, bmd):
     try:
         disp.On.Poll.Timeout = poll_named
     except Exception as e:
-        glog(f"disp.On.Poll.Timeout no se puede registrar: {type(e).__name__}: {e}")
-    glog(f"ui.Timer: {'creado' if timer else 'no disponible (solo Actualizar)'}")
+        glog(f"disp.On.Poll.Timeout cannot be registered: {type(e).__name__}: {e}")
+    glog(f"ui.Timer: {'created' if timer else 'not available (Refresh only)'}")
 
     running = find_running_job()
-    glog(f"reenganche: pid {running['pid']} · {running['status']}" if running else "reenganche: ningún trabajo en marcha")
+    glog(f"reattach: pid {running['pid']} · {running['status']}" if running else "reattach: no job running")
     if running:
         state["job"] = running
-        itm["Info"].Text = "Hay un trabajo en marcha de una ventana anterior: mostrando su progreso."
+        itm["Info"].Text = "A job from a previous window is running: showing its progress."
         set_running(True)
         if timer:
             timer.Start()
@@ -2118,12 +2117,12 @@ def gui(resolve, bmd):
     disp.RunLoop()
     if timer:
         timer.Stop()
-    glog(f"ventana cerrada · disparos del temporizador {ticks.n} · {time.time() - ticks.t0:.0f} s"
-         + (f" · trabajo sigue en marcha (pid {state['job'].get('pid')})" if state["job"] else ""))
+    glog(f"window closed · timer ticks {ticks.n} · {time.time() - ticks.t0:.0f} s"
+         + (f" · job still running (pid {state['job'].get('pid')})" if state["job"] else ""))
     win.Hide()
     if state["job"]:
-        print("MHL MediaManagement: la ventana se ha cerrado pero el trabajo sigue en segundo plano; "
-              "al reabrir MHL MediaManagement se muestra su progreso.")
+        print("MHL MediaManagement: the window was closed but the job continues in the background; "
+              "reopen MHL MediaManagement to see its progress.")
 
 
 # ======================================================================
@@ -2138,15 +2137,15 @@ def cli(argv):
     ap.add_argument("--files", type=Path)
     ap.add_argument("--dest", type=Path)
     ap.add_argument("--scope", choices=SCOPES, default="clips",
-                    help="qué copiar (D16): clips del timeline, todo lo que atestigua el MHL del DIT, o eso más lo que"
-                         " no tiene MHL")
-    ap.add_argument("--all", action="store_true", help="alias de --scope all")
+                    help="what to copy (D16): timeline clips, everything the DIT's MHL attests, or that plus the files"
+                         " without an MHL")
+    ap.add_argument("--all", action="store_true", help="alias for --scope all")
     ap.add_argument("--whole-mhl", action="store_true",
-                    help="con --scope mhl/all, copiar todo un MHL que cubre varias tarjetas, no solo las carpetas usadas (D19, D20)")
+                    help="with --scope mhl/all, copy a whole MHL that covers several cards, not just the used folders (D19, D20)")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--diag", action="store_true", help="diagnóstico del entorno (intérprete, ascmhl, carpetas)")
-    ap.add_argument("--selftest", action="store_true", help="autotest: trabajo real sobre una tarjeta sintética")
-    ap.add_argument("--keep", action="store_true", help="con --selftest, conservar la carpeta temporal")
+    ap.add_argument("--diag", action="store_true", help="environment diagnostics (interpreter, ascmhl, folders)")
+    ap.add_argument("--selftest", action="store_true", help="self-test: real job on a synthetic card")
+    ap.add_argument("--keep", action="store_true", help="with --selftest, keep the temp folder")
     a = ap.parse_args(argv)
     if a.worker:
         return worker(a.worker, a.status)
@@ -2160,18 +2159,18 @@ def cli(argv):
         paths = [l.strip() for l in a.files.read_text(encoding="utf-8").splitlines() if l.strip()]
         plan = build_plan(scan(paths, log=lambda *_: None), "all" if a.all else a.scope, whole_mhl=a.whole_mhl)
         if not plan["items"]:
-            print("Nada que copiar."); return 2
-        print(f"Qué copiar: {SCOPE_LABEL[plan['scope']]}")
+            print("Nothing to copy."); return 2
+        print(f"What to copy: {SCOPE_LABEL[plan['scope']]}")
         for line in big_mhl_lines(plan, cli=True):  # D19/D20: sin --whole-mhl, solo las carpetas usadas
             print(line)
         for rel, c in sorted(plan["cards"].items()):
             print(card_line(rel, c))
             for n in card_notes(rel, c):
-                print(f"  aviso: {n}")
+                print(f"  warning: {n}")
         for e in sorted({e["group"] for e in plan["excluded"]}):
-            print(f"excluido (sin MHL de origen): {e}")
+            print(f"excluded (no source MHL): {e}")
         for m in plan["missing"]:
-            print(f"no encontrado: {m}")
+            print(f"not found: {m}")
         why = dest_conflict(plan, a.dest.resolve())
         if why:
             print(why); return 2
@@ -2193,7 +2192,7 @@ def _resolve_handles():
 _r, _b = _resolve_handles()
 if _r is not None:
     # Lanzado desde Resolve (Workspace > Scripts): __name__ no siempre es "__main__"
-    print("MHL MediaManagement: abriendo ventana…")
+    print("MHL MediaManagement: opening window…")
     try:
         gui(_r, _b)
     except Exception:
