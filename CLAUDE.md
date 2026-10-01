@@ -12,7 +12,7 @@ install.sh             copia o enlaza el script en Scripts/Utility de Resolve e 
 .claude/rules/         normas (una por archivo)        .claude/skills/   release · obsidian-vault
 .claude/settings.json  hooks: pull + issues al arrancar · bloqueo de rutas al escribir · bloqueo de commit en main · push al cerrar
 docs/decisiones.md     ADRs D1–Dn                      docs/bitacora/    una entrada por sesión (00-arranque, 01-renombrado-y-debug)
-docs/arquitectura.md   cómo está hecho el script; hallazgos H1–H10
+docs/arquitectura.md   cómo está hecho el script; hallazgos H1–H11
 docs/contexto-estudio.md  qué exige el estudio, en genérico   docs/roadmap.md  versiones previstas
 tests/                 pytest (81): humo del modo CLI, plan, worker/conformidad, lanzamiento/reenganche, versión
 .github/workflows/     ci.yml (push a main y PRs)      pyproject.toml · uv.lock · .python-version
@@ -49,7 +49,7 @@ Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
 | Archivo | Leer cuando… |
 |---|---|
 | `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D19; pendientes del owner al final) |
-| `docs/arquitectura.md` | Vas a tocar cualquier función del script, el worker, el estado o los hashes; hallazgos H1–H10 |
+| `docs/arquitectura.md` | Vas a tocar cualquier función del script, el worker, el estado o los hashes; hallazgos H1–H11 |
 | `docs/contexto-estudio.md` | Necesitas saber qué exige el estudio del media management y del MHL |
 | `docs/roadmap.md` | Dudas de qué entra en cada versión |
 | `docs/bitacora/` | Quieres saber qué pasó en cada sesión |
