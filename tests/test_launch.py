@@ -244,7 +244,7 @@ def test_compute_dest(tmp_path, mp, monkeypatch):
     (tmp_path / "enlace").symlink_to(real)
     assert mp.compute_dest("", True, "P") is None and mp.compute_dest("   ", False, "P") is None
     assert mp.compute_dest("/", False, "P") == Path("/")
-    assert mp.compute_dest("/", True, "..") == Path("/PROYECTO")
+    assert mp.compute_dest("/", True, "..") == Path("/PROJECT")
     assert mp.compute_dest("~/real", False, "P") == real.resolve()
     assert mp.compute_dest(f"  {real}/  ", True, "P") == real.resolve() / "P"
     assert mp.compute_dest(str(tmp_path / "enlace"), True, "a/b") == real.resolve() / "a_b"

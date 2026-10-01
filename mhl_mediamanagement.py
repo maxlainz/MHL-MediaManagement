@@ -1288,7 +1288,7 @@ def _work(job, dest, dry, log, st):
 # ======================================================================
 
 def safe_name(s):
-    """Nombre de carpeta sin separadores; nunca vacío ni solo puntos («.», «..» → PROYECTO)."""
+    """Nombre de carpeta sin separadores; nunca vacío ni solo puntos («.», «..» → PROJECT)."""
     n = re.sub(r'[/:\\]+', "_", s or "").strip()
     return n if n.strip(".") else "PROJECT"
 
