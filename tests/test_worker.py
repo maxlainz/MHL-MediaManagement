@@ -190,3 +190,66 @@ def test_sigterm_borra_la_carpeta_ascmhl_a_medias(tmp_path, mp, monkeypatch):
     monkeypatch.setattr(mp, "_COMMITTING", [False])
     mp.make_on_term(lambda s: None, mp.Status(None), open(tmp_path / "log.txt", "w"))(15, None)
     assert not part.exists()
+
+
+# ---------- D11: tarjeta parcial avisada y «Tarjeta completa» ----------
+
+def root_manifest(dest):
+    return (dest / "ascmhl" / mhl_files(dest / "ascmhl")[-1]).read_text()
+
+
+def test_tarjeta_parcial_avisa_y_verify_da_missing(tmp_path, media, ascmhl_debug_cli):
+    dest = tmp_path / "dest"
+    r = run_pull(tmp_path, media["clips"][:1], dest)
+    assert r.returncode == 0, out(r)
+    assert "[ASC MHL] A001 — 1 de 3 clips (parcial)" in out(r)
+    assert "Tarjetas: A001 1/3 (parcial)" in out(r)
+    assert "parcial: A001 1/3" in root_manifest(dest)
+    assert not (dest / "A001" / "CLIP" / "A001C002.mov").exists()
+    # esperado (D11): el historial del DIT copiado tal cual lista clips que no se han copiado
+    v = verify(tmp_path, ascmhl_debug_cli, dest)
+    assert v.returncode == 10, out(v)
+
+
+def test_tarjeta_completa_verifica_limpio(tmp_path, media, ascmhl_debug_cli):
+    dest = tmp_path / "dest"
+    r = run_pull(tmp_path, media["clips"][:1], dest, "--full-cards")
+    assert r.returncode == 0, out(r)
+    assert "[ASC MHL] A001 — 3 de 3 clips" in out(r) and "parcial" not in out(r)
+    for c in media["clips"]:
+        assert (dest / c.relative_to(media["src"])).is_file()
+    assert "parcial" not in root_manifest(dest)
+    v = verify(tmp_path, ascmhl_debug_cli, dest)
+    assert v.returncode == 0, out(v)
+
+
+def test_tarjeta_completa_legacy_no_duplica_el_mhl(tmp_path, ascmhl_debug_cli):
+    card, clips = legacy_card(tmp_path, "B001.mhl")
+    dest = tmp_path / "dest"
+    r = run_pull(tmp_path, clips[:1], dest, "--full-cards")
+    assert r.returncode == 0, out(r)
+    assert "[MHL legacy] B001 — 2 de 2 clips" in out(r)
+    assert "2 ficheros" in out(r)  # items: los 2 clips; el .mhl va aparte (fase 1)
+    assert out(r).count("MHL copiado: B001/B001.mhl") == 1
+    assert (dest / "B001" / "CLIP" / clips[1].name).is_file()
+    assert root_manifest(dest).count("B001.mhl") == 1
+    v = verify(tmp_path, ascmhl_debug_cli, dest)
+    assert v.returncode == 0, out(v)
+
+
+# ---------- D12: un .mhl olvidado dentro de una tarjeta ASC no la convierte en legacy ----------
+
+def test_mhl_legacy_suelto_en_tarjeta_asc(tmp_path, ascmhl_cli, ascmhl_debug_cli):
+    card = tmp_path / "src" / "A001"
+    clips = [write_bin(card / "CLIP" / f"A001C00{i}.mov", seed=i) for i in (1, 2)]
+    (card / "CLIP" / "old.mhl").write_text('<hashlist version="1.1"></hashlist>')  # antes de create: el DIT lo lista
+    r = subprocess.run([ascmhl_cli, "create", "-h", "xxh64", str(card)], capture_output=True, text=True,
+                       env=isolated_env(tmp_path))
+    assert r.returncode == 0, out(r)
+    dest = tmp_path / "dest"
+    r = run_pull(tmp_path, clips[:1], dest, "--full-cards")
+    assert r.returncode == 0, out(r)
+    assert "[ASC MHL] A001 — 3 de 3 clips" in out(r) and "[MHL legacy]" not in out(r)
+    assert (dest / "A001" / "ascmhl").is_dir() and (dest / "A001" / "CLIP" / "old.mhl").is_file()
+    v = verify(tmp_path, ascmhl_debug_cli, dest)
+    assert v.returncode == 0, out(v)
