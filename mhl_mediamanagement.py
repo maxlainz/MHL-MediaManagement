@@ -3,21 +3,23 @@
 MHL MediaManagement — media management de uno o varios timelines de DaVinci Resolve respetando el MHL de origen.
 
 Flujo:
-  1. GUI (Workspace > Scripts > MHL MediaManagement): eliges timelines, destino y si solo media de cámara.
+  1. GUI (Workspace > Scripts > MHL MediaManagement): eliges timelines, destino y «Qué copiar» (D16).
      «Preparar» lee los timelines (sin duplicados) y muestra la vista previa. No crea ningún MHL.
   2. Copia (en segundo plano, con progreso en la ventana): ficheros, conservando la estructura desde la raíz común; las tarjetas
-     con MHL de origen se copian con su MHL tal cual (carpeta ascmhl/ o .mhl legacy). Por defecto solo los clips de
-     los timelines (tarjeta parcial, avisada); «Tarjeta completa» copia cada tarjeta entera (D11).
+     con MHL de origen se copian con su MHL tal cual (carpeta ascmhl/ o .mhl legacy). «Clips del timeline» (tarjeta
+     parcial, avisada, D11); «Respetar historial MHL» copia todo lo que atestigua el MHL del DIT de cada tarjeta usada
+     (D19: un MHL que cubre más que las carpetas usadas pide confirmación); «Todo» añade los ficheros sin MHL.
   3. Verificación (solo lectura): cada fichero de tarjeta contra su MHL de origen;
      los ficheros sin MHL, origen contra destino.
   4. Solo si TODO cuadra: un ASC MHL de todo el media management en la raíz del destino.
      Según el spec ASC MHL, cada tarjeta con historial recibe una generación "verified"
      que la raíz referencia; las generaciones del DIT no se tocan.
 
-Cámara = fichero dentro de una tarjeta con MHL de origen (ascmhl/ o .mhl en algún ancestro; ascmhl/ gana, D12).
+Cámara = fichero dentro de una tarjeta con MHL de origen (ascmhl/ en algún ancestro, que gana, D12; o el .mhl más
+cercano que lo cita, D18).
 
 Sin GUI:
-  python3 "MHL MediaManagement.py" --files lista.txt --dest /Volumes/X [--all] [--full-cards] [--dry-run]
+  python3 "MHL MediaManagement.py" --files lista.txt --dest /Volumes/X [--scope clips|mhl|all] [--whole-mhl] [--dry-run]
   python3 "MHL MediaManagement.py" --diag                  (diagnóstico del entorno)
   python3 "MHL MediaManagement.py" --selftest [--keep]     (autotest: trabajo real sobre una tarjeta sintética)
   python3 "MHL MediaManagement.py" --worker job.json      (lo usa la GUI)
@@ -66,6 +68,7 @@ class FS:
 
     def __init__(self):
         self.listing, self.near, self.mounts, self.totals, self.nfc, self.real = {}, {}, {}, {}, {}, {}
+        self.legacy, self.legacy_nfc = {}, {}
 
     def ls(self, d):
         """{nombre: es_carpeta} de la carpeta d (un solo scandir; d_type, sin stat salvo enlaces), o None si no se lee."""
@@ -102,6 +105,12 @@ class FS:
                 self.real[d] = os.path.join(rp, name if name.isascii() else (self.real_name(rp, name) or name))
         return self.real[d]
 
+    def is_mount(self, d):
+        d = str(d)
+        if d not in self.mounts:
+            self.mounts[d] = os.path.ismount(d)
+        return self.mounts[d]
+
     def _nearest(self, d, kind):
         """Ancestro más cercano de d (incluida) con MHL de ese tipo, o None. No sube por encima de un punto de montaje.
         Memorizado por carpeta: una secuencia de 10 000 frames cuesta un listado (y un ismount) por ancestro."""
@@ -112,63 +121,135 @@ class FS:
                 self.near[key] = Path(d)
             else:
                 parent = os.path.dirname(d)
-                if d not in self.mounts:
-                    self.mounts[d] = os.path.ismount(d)
-                self.near[key] = None if not parent or parent == d or self.mounts[d] else self._nearest(parent, kind)
+                self.near[key] = None if not parent or parent == d or self.is_mount(d) else self._nearest(parent, kind)
         return self.near[key]
 
-    def card_for(self, d):
+    def _legacy_chain(self, d):
+        """Ancestros de d (incluida, del más cercano hacia arriba, hasta el punto de montaje) con algún .mhl."""
+        key = (d, "chain")
+        if key not in self.near:
+            here = [Path(d)] if any(n.lower().endswith(".mhl") for n in (self.ls(d) or {})) else []
+            parent = os.path.dirname(d)
+            up = [] if not parent or parent == d or self.is_mount(d) else self._legacy_chain(parent)
+            self.near[key] = here + up
+        return self.near[key]
+
+    def legacy_index(self, d):
+        """(entradas, errores) de los .mhl legacy de la carpeta d, leídos una vez (read_legacy); entradas con rutas
+        relativas a d y separador «/»."""
+        d = str(d)
+        if d not in self.legacy:
+            self.legacy[d] = read_legacy(d, self.ls(d) or {})
+            self.legacy_nfc[d] = {_nfc(k): k for k in self.legacy[d][0]}
+        return self.legacy[d]
+
+    def legacy_key(self, card, f):
+        """Clave de legacy_index(card) que nombra el fichero f (literal o en la otra forma Unicode, D17), o None."""
+        entries, _ = self.legacy_index(card)
+        rel = os.path.relpath(str(f), str(card)).replace(os.sep, "/")
+        return rel if rel in entries else self.legacy_nfc[str(card)].get(_nfc(rel))
+
+    def card_for(self, d, name=None):
         """Tarjeta de la carpeta d → (Path, 'asc'|'legacy') o (None, None). D12: un ascmhl/ en cualquier ancestro (el más
-        cercano) gana sobre un .mhl legacy más cercano; el legacy solo cuenta si no hay ASC MHL por encima."""
+        cercano) gana sobre un .mhl legacy más cercano; el legacy solo cuenta si no hay ASC MHL por encima.
+        D18: con `name`, la tarjeta legacy es la carpeta del .mhl más cercano que cita el fichero (rutas relativas a
+        ese .mhl); si uno más cercano no lo cita, se sigue subiendo. Si ninguno lo cita: el primero ilegible (para que
+        el error se vea) o el más cercano (la verificación dirá «no figura»)."""
         d = str(d)
         asc = self._nearest(d, "asc")
         if asc:
             return asc, "asc"
-        legacy = self._nearest(d, "legacy")
-        return (legacy, "legacy") if legacy else (None, None)
+        chain = self._legacy_chain(d)
+        if not chain:
+            return None, None
+        if name is None:
+            return chain[0], "legacy"
+        unreadable = None
+        for c in chain:
+            if self.legacy_key(c, os.path.join(d, name)):
+                return c, "legacy"
+            if unreadable is None and self.legacy_index(c)[1]:
+                unreadable = c
+        return unreadable or chain[0], "legacy"
 
-    def mhl_total(self, card, kind):
-        """Ficheros que lista el MHL de origen de la tarjeta (sin recorrer la tarjeta: nada de stat por fichero en SMB).
-        ASC: rutas distintas de los <hash> de todas las generaciones de ascmhl/ (lo que verifica la referencia);
-        legacy: rutas de los <hash> de los .mhl de la raíz de la tarjeta. None si no se puede leer o interpretar."""
-        key = str(card)
+    def attested(self, card, kind):
+        """{ruta relativa a la tarjeta: tamaño o None} de lo que atestigua su MHL de origen, sin recorrer la tarjeta
+        (nada de stat por fichero en SMB). ASC: rutas de los <hash> de todas las generaciones de ascmhl/ (lo que verifica
+        la referencia); legacy: los <file> de los .mhl de la carpeta de la tarjeta. None si no se puede leer."""
+        key = (str(card), kind)
         if key not in self.totals:
-            d = os.path.join(key, "ascmhl") if kind == "asc" else key
+            if kind == "legacy":
+                entries, errors = self.legacy_index(card)
+                self.totals[key] = None if errors else {k: e["size"] for k, e in entries.items()}
+                return self.totals[key]
+            d = os.path.join(str(card), "ascmhl")
             names = sorted(n for n in (self.ls(d) or {}) if n.lower().endswith(".mhl"))
-            paths = set()
+            paths = {}
             try:
                 if not names:
                     raise ValueError("sin manifiestos")
                 for n in names:
                     for el in ET.parse(os.path.join(d, n)).getroot().iter():
-                        if el.tag.rsplit("}", 1)[-1] != "hash":  # ASC lleva namespace (urn:ASC:MHL:v2.0); legacy no
+                        if _tag(el) != "hash":  # ASC lleva namespace (urn:ASC:MHL:v2.0)
                             continue
-                        sub = next((c for c in el if c.tag.rsplit("}", 1)[-1] == ("path" if kind == "asc" else "file")),
-                                   None)
+                        sub = next((c for c in el if _tag(c) == "path"), None)
                         if sub is None or not (sub.text or "").strip():
                             raise ValueError("<hash> sin ruta")
-                        paths.add(sub.text.strip().replace("\\", "/"))
-                self.totals[key] = len(paths)
+                        size = sub.get("size")
+                        paths[sub.text.strip().replace("\\", "/")] = int(size) if (size or "").isdigit() else None
+                self.totals[key] = paths
             except (ET.ParseError, OSError, ValueError):
                 self.totals[key] = None
         return self.totals[key]
 
-    def card_files(self, card, kind):
-        """Todos los ficheros de la tarjeta (un listado por carpeta, sin stat): sin ascmhl/, sin .DS_Store, sin las
-        subcarpetas que son otra tarjeta y, en legacy, sin los .mhl de la raíz (la fase 1 los copia aparte)."""
-        out, todo = [], [str(card)]
-        while todo:
-            d = todo.pop()
-            for n, is_dir in sorted((self.ls(d) or {}).items()):
-                p = os.path.join(d, n)
-                if n == ".DS_Store" or (is_dir and n == "ascmhl"):
-                    continue
-                if is_dir:
-                    if self.card_for(p) == (Path(card), kind):
-                        todo.append(p)
-                elif not (kind == "legacy" and d == str(card) and n.lower().endswith(".mhl")):
-                    out.append(Path(p))
-        return sorted(out)
+    def mhl_total(self, card, kind):
+        """Ficheros que atestigua el MHL de origen de la tarjeta (attested), o None si no se puede leer."""
+        a = self.attested(card, kind)
+        return None if a is None else len(a)
+
+    def locate(self, card, rel):
+        """Ruta real en disco del fichero rel (de un MHL) bajo card, con nombres de disco (D17), o None si no está."""
+        d, name = os.path.split(os.path.join(str(card), rel))
+        d = self.real_dir(d)
+        real = self.real_name(d, name)
+        return Path(d) / real if real is not None and not self.ls(d)[real] else None
+
+
+def _tag(el):
+    return el.tag.rsplit("}", 1)[-1]
+
+
+LEGACY_ALGOS = ("xxhash64be", "xxhash64", "md5", "sha1", "xxhash")  # MHL 1.x (XSD 1.1 de mediahashlist.org)
+
+
+def parse_legacy(path):
+    """Un .mhl 1.x → {ruta con «/»: {"hashes": {algoritmo: valor}, "size": int|None, "null": bool}}. D18: una entrada
+    puede traer varios hashes; <null> = solo tamaño. Lanza ET.ParseError/OSError si no se puede leer."""
+    out = {}
+    for h in ET.parse(path).getroot().iter():
+        if _tag(h) != "hash":
+            continue
+        kids = {_tag(c).lower(): (c.text or "").strip() for c in h}
+        f = kids.get("file", "").replace("\\", "/")
+        if f.startswith("./"):
+            f = f[2:]
+        if not f:
+            continue
+        out[f] = {"hashes": {a: kids[a] for a in LEGACY_ALGOS if kids.get(a)},
+                  "size": int(kids["size"]) if kids.get("size", "").isdigit() else None, "null": "null" in kids}
+    return out
+
+
+def read_legacy(d, names):
+    """(entradas, errores) de los .mhl de la carpeta d (names: su listado). D18: un .mhl ilegible (XML roto, codificación
+    que no cuadra) no se calla: va a errores como (nombre, motivo) y bloquea el MHL del media management."""
+    entries, errors = {}, []
+    for n in sorted(x for x in names if x.lower().endswith(".mhl")):
+        try:
+            entries.update(parse_legacy(os.path.join(d, n)))
+        except (ET.ParseError, OSError, UnicodeError, ValueError) as e:
+            errors.append((n, str(e) or type(e).__name__))
+    return entries, errors
 
 
 def _nfc(s):
@@ -228,7 +309,7 @@ def scan(raw_paths, log=print):
         if not files:
             missing.append(p)
             continue
-        card, kind = fs.card_for(files[0].parent)  # los frames comparten carpeta
+        card, kind = fs.card_for(files[0].parent, files[0].name)  # los frames comparten carpeta (y .mhl)
         for f in files:  # rutas reales del listado: NFC y NFD de un mismo fichero dan un solo item (D17)
             if f not in seen:
                 seen.add(f)
@@ -236,22 +317,101 @@ def scan(raw_paths, log=print):
     return {"items": items, "missing": missing, "fs": fs}
 
 
-def build_plan(scanned, camera_only, full_cards=False):
-    """Plan de copia. Con full_cards («Tarjeta completa», D11) cada tarjeta del plan se amplía a todos sus ficheros."""
+SCOPES = ("clips", "mhl", "all")  # D16: «Qué copiar», en el orden del desplegable
+SCOPE_LABEL = {"clips": "Clips del timeline", "mhl": "Respetar historial MHL (tarjetas/reels enteros)",
+               "all": "Todo, también sin MHL"}
+SCOPE_HELP = {
+    "clips": "Copia solo los clips usados, con el historial MHL del DIT tal cual. No copia el resto de la tarjeta ni"
+             " ficheros sin MHL (audio suelto, gráficos). Un verificador externo dirá que en esa tarjeta faltan los"
+             " clips no copiados.",
+    "mhl": "Copia todo lo que atestigua el MHL del DIT de cada tarjeta usada. No copia lo que esté en la tarjeta y no"
+           " en su MHL (se avisa) ni ficheros sin MHL. El destino verifica limpio con cualquier herramienta.",
+    "all": "Como «Respetar historial MHL» y además los ficheros sin MHL de origen, verificados origen contra destino"
+           " con nuestro hash.",
+}
+IGNORED = {".DS_Store", "ascmhl"}  # los que ascmhl ignora por defecto
+
+
+def scope_from_index(i):
+    """Índice del desplegable «Qué copiar» → "clips" | "mhl" | "all" (fuera de rango → "clips")."""
+    try:
+        return SCOPES[int(i)] if 0 <= int(i) < len(SCOPES) else "clips"
+    except (TypeError, ValueError):
+        return "clips"
+
+
+def _top(rel):
+    """Primera carpeta de una ruta relativa al MHL («A001/CLIP/x.mov» → «A001»); un fichero en la raíz → «.»."""
+    rel = rel.replace(os.sep, "/")
+    return rel.split("/", 1)[0] if "/" in rel else "."
+
+
+def es_int(n):
+    """2340 → «2 340»."""
+    return f"{n:,}".replace(",", " ")
+
+
+def _expand_mhl(plan, items, fs, whole_mhl):
+    """D16/D19: amplía cada tarjeta usada a lo que atestigua su MHL de origen (la lista sale de los manifiestos, no de
+    recorrer la tarjeta). Cuenta lo que está en disco y no en el MHL (no se copia) y lo atestiguado que falta. Un MHL
+    que cubre más que las carpetas usadas va a plan["big_mhl"] y, salvo whole_mhl, se limita a esas carpetas."""
+    have = {it["src"] for it in items}
+    notes = {}
+    for card, kind in sorted({(it["card"], it["kind"]) for it in items if it["card"]}):
+        att = fs.attested(card, kind)
+        if att is None:
+            continue
+        used = {}
+        for it in items:
+            if it["card"] == card:
+                u = _top(os.path.relpath(str(it["src"]), str(card)))
+                used[u] = used.get(u, 0) + 1
+        groups = {_top(p) for p in att}
+        keep = att if "." in used else {p: s for p, s in att.items() if _top(p) in used}
+        if fs.is_mount(card) or groups - set(used) and "." not in used or len(groups - {"."}) > 1:
+            plan["big_mhl"].append({"anchor": str(card), "kind": kind, "files": len(att),
+                                    "bytes": sum(s or 0 for s in att.values()), "used_folders": sorted(used.items()),
+                                    "extra_files": len(att) - len(keep), "limited_files": len(keep)})
+        sel = att if whole_mhl else keep
+        absent = 0
+        for p in sorted(sel):
+            f = fs.locate(card, p)
+            if f is None:
+                absent += 1
+                plan["missing"].append(os.path.join(str(card), p))
+            elif f not in have:
+                have.add(f)
+                items.append({"src": f, "card": card, "kind": kind, "group": str(card)})
+        # lo que hay en disco y no en el MHL: un listado por carpeta que el MHL nombra (y la raíz si toca), sin stat
+        att_nfc = {_nfc(p) for p in att}
+        unlisted = 0
+        for sub in sorted({os.path.dirname(p) for p in sel} | ({""} if sel is att else set())):
+            d = fs.real_dir(os.path.join(str(card), sub) if sub else str(card))
+            for n, is_dir in (fs.ls(d) or {}).items():
+                if is_dir or n in IGNORED or n.startswith("._") or (not sub and kind == "legacy"
+                                                                     and n.lower().endswith(".mhl")):
+                    continue
+                if _nfc(os.path.join(sub, n).replace(os.sep, "/")) not in att_nfc:
+                    unlisted += 1
+        notes[card] = {"unlisted": unlisted, "absent": absent}
+    return notes
+
+
+def build_plan(scanned, scope="clips", whole_mhl=False):
+    """Plan de copia según «Qué copiar» (D16): "clips" = solo los clips de los timelines con MHL de origen; "mhl" =
+    además todo lo que atestigua el MHL del DIT de cada tarjeta usada (D19: limitado a las carpetas usadas salvo
+    whole_mhl); "all" = "mhl" más los ficheros sin MHL."""
+    if scope not in SCOPES:
+        raise ValueError(f"scope desconocido: {scope}")
     fs = scanned.get("fs") or FS()
+    camera_only = scope != "all"
     excluded = [it for it in scanned["items"] if camera_only and it["kind"] == "none"]
     items = [dict(it) for it in scanned["items"] if not (camera_only and it["kind"] == "none")]
-    plan = {"base": None, "items": items, "excluded": excluded, "missing": scanned["missing"], "collisions": [],
-            "cards": {}, "full_cards": full_cards}
+    plan = {"base": None, "items": items, "excluded": excluded, "missing": list(scanned["missing"]), "collisions": [],
+            "cards": {}, "scope": scope, "whole_mhl": bool(whole_mhl), "big_mhl": []}
     if not items:
         return plan
-    if full_cards:
-        have = {it["src"] for it in items}
-        for card, kind in sorted({(it["card"], it["kind"]) for it in items if it["card"]}):
-            for f in fs.card_files(card, kind):
-                if f not in have:
-                    have.add(f)
-                    items.append({"src": f, "card": card, "kind": kind, "group": str(card)})
+    notes = _expand_mhl(plan, items, fs, whole_mhl) if scope != "clips" else {}
     cards = {it["card"] for it in items if it["card"]}
     base = Path(os.path.commonpath(sorted({str(it["card"] or it["src"].parent) for it in items})))
     changed = True
@@ -283,7 +443,8 @@ def build_plan(scanned, camera_only, full_cards=False):
     for it in items:  # D11: clips usados de cada tarjeta frente a los que lista su MHL de origen
         if it["card"]:
             c = plan["cards"].setdefault(it["card_rel"], {"kind": it["kind"], "used": 0,
-                                                          "total": fs.mhl_total(it["card"], it["kind"])})
+                                                          "total": fs.mhl_total(it["card"], it["kind"]),
+                                                          **notes.get(it["card"], {})})
             c["used"] += 1
     plan["anchors"] = sorted({it["card"] or it["src"].parent for it in items})
     return plan
@@ -366,26 +527,59 @@ def cards_summary(cards, only_partial=False):
     return ", ".join(out)
 
 
+def card_notes(card_rel, c):
+    """D16: avisos de una tarjeta con «Respetar historial MHL»: lo que hay y no está en el MHL, y lo atestiguado que falta."""
+    out = []
+    if c.get("unlisted"):
+        out.append(f"{c['unlisted']} ficheros de {card_rel} no figuran en el MHL del DIT; no se copian")
+    if c.get("absent"):
+        out.append(f"{card_rel}: faltan {c['absent']} ficheros atestiguados")
+    return out
+
+
+def human_es(b):
+    return human(b).replace(".", ",")
+
+
+def big_mhl_lines(plan):
+    """D19: «MHL de nivel superior: /Volumes/X/DIA_03 cubre 2 340 ficheros (1,8 TB); clips usados en A001 (18), …»."""
+    out = []
+    for b in plan.get("big_mhl") or []:
+        used = ", ".join(f"{'(raíz)' if n == '.' else n} ({k})" for n, k in b["used_folders"])
+        out.append(f"MHL de nivel superior: {b['anchor']} cubre {es_int(b['files'])} ficheros ({human_es(b['bytes'])});"
+                   f" clips usados en {used}")
+        out.append("    → se copia todo el MHL" if plan.get("whole_mhl") else
+                   f"    → solo las carpetas usadas ({es_int(b['limited_files'])} ficheros atestiguados; quedan fuera"
+                   f" {es_int(b['extra_files'])}); al copiar se pide confirmación")
+    return out
+
+
 def preview_lines(plan):
+    scope = plan.get("scope", "clips")
+    lines = [f"Qué copiar: {SCOPE_LABEL[scope]} — {SCOPE_HELP[scope]}"]
+    big = big_mhl_lines(plan)
+    if big:
+        lines += [""] + big
     groups = {}
     for it in plan["items"]:
         g = groups.setdefault(it["group"], {"kind": it["kind"], "card_rel": it["card_rel"], "n": 0,
                                             "rest": bool(it["card"]) and it["group"] == str(it["card"])})
         g["n"] += 1
-    lines, last = [], object()
+    last = object()
     for gp, g in sorted(groups.items(), key=lambda kv: (kv[1]["card_rel"] or "~", kv[1]["rest"], kv[0])):
         if g["card_rel"] != last:
             last = g["card_rel"]
             c = plan.get("cards", {}).get(g["card_rel"])
             lines.append("\n" + (card_line(g["card_rel"], c) if c else "[sin MHL] —"))
-        if g["rest"]:  # Tarjeta completa: lo que no estaba en los timelines
-            lines.append(f"    + resto de la tarjeta  ({g['n']} ficheros)")
+            lines += [f"    ! {n}" for n in (card_notes(g["card_rel"], c) if c else [])]
+        if g["rest"]:  # «Respetar historial MHL»: lo que atestigua el MHL y no estaba en los timelines
+            lines.append(f"    + resto de lo que atestigua el MHL  ({g['n']} ficheros)")
             continue
         rel = os.path.relpath(gp, str(plan["base"]))
         lines.append(f"    {rel}" + (f"  ({g['n']} frames)" if g["n"] > 1 else ""))
     excl = sorted({e["group"] for e in plan["excluded"]})
     if excl:
-        lines.append("\n[EXCLUIDOS — no cámara]")
+        lines.append("\n[EXCLUIDOS — sin MHL de origen]")
         lines += [f"    {e}" for e in excl]
     if plan["missing"]:
         lines.append("\n[NO ENCONTRADOS o sin permiso de lectura]")
@@ -396,7 +590,8 @@ def preview_lines(plan):
 def job_from_plan(plan, dest, dry_run, label=""):
     return {
         "dest": str(dest), "base": str(plan["base"]), "dry_run": dry_run, "label": label,
-        "full_cards": bool(plan.get("full_cards")), "cards": plan.get("cards", {}),
+        "scope": plan.get("scope", "clips"), "whole_mhl": bool(plan.get("whole_mhl")), "cards": plan.get("cards", {}),
+        "big_mhl": plan.get("big_mhl", []),
         "items": [{"src": str(i["src"]), "rel": i["rel"], "kind": i["kind"],
                    "card": str(i["card"]) if i["card"] else None, "card_rel": i["card_rel"]} for i in plan["items"]],
     }
@@ -553,23 +748,29 @@ def legacy_mhl_names(card):
         return []
 
 
+def legacy_read(card):
+    """(entradas, errores) de los .mhl legacy de la carpeta de la tarjeta (ver read_legacy)."""
+    return read_legacy(str(card), legacy_mhl_names(card))
+
+
 def legacy_hashes(card):
-    out = {}
-    for name in legacy_mhl_names(card):
-        try:
-            root = ET.parse(os.path.join(card, name)).getroot()
-        except (ET.ParseError, OSError):
-            continue
-        for h in root.iter("hash"):
-            f = h.findtext("file")
-            if not f:
-                continue
-            for algo in ("xxhash64be", "xxhash64", "md5", "sha1", "xxhash"):
-                v = h.findtext(algo)
-                if v:
-                    out[f.replace("\\", "/")] = (algo, v.strip().lower())
-                    break
-    return out
+    """{ruta relativa al .mhl: {"hashes", "size", "null"}} de los .mhl de la tarjeta (los ilegibles, fuera)."""
+    return legacy_read(card)[0]
+
+
+def legacy_match(algo, expected, got_hex):
+    """D18: ¿cuadra el valor del .mhl legacy con el hex calculado? <xxhash> (XXH32) va en decimal (10 dígitos, H11):
+    se compara como entero; también se acepta en hex de 8 caracteres. <xxhash64> puede venir con los bytes invertidos
+    (little-endian). md5/sha1/xxhash64be: hex sin distinguir mayúsculas."""
+    e = (expected or "").strip().lower()
+    if algo == "xxhash":
+        g = int(got_hex, 16)
+        if e.isdigit() and int(e) == g:
+            return True
+        return len(e) == 8 and all(ch in "0123456789abcdef" for ch in e) and int(e, 16) == g
+    if algo == "xxhash64":
+        return e in (got_hex, bytes.fromhex(got_hex)[::-1].hex())
+    return e == got_hex
 
 
 def nfc_match(rel, known, cache, key):
@@ -684,10 +885,15 @@ def _mhl_dirs(history):
     return out
 
 
+SCOPE_WORD = {"clips": "clips del timeline", "mhl": "historial MHL", "all": "todo"}
+
+
 def mhl_comment(job):
-    """comment del MHL raíz; D11: nombra las tarjetas copiadas a medias («; parcial: A001 2/37, C001 1/12»)."""
+    """comment del MHL raíz: qué se copió (D16) y las tarjetas copiadas a medias (D11, «; parcial: A001 2/37»)."""
     partial = cards_summary(job.get("cards") or {}, only_partial=True)
+    scope = job.get("scope", "clips")
     return (f"MHL MediaManagement: media management {job.get('label', '')}".strip()
+            + f"; qué copiar: {SCOPE_WORD.get(scope, scope)}" + (" (todo el MHL)" if job.get("whole_mhl") else "")
             + (f"; parcial: {partial}" if partial else ""))
 
 
@@ -753,9 +959,16 @@ def _work(job, dest, dry, log, st):
     log(f"MHL MediaManagement {__version__} — {job.get('label', '')}")
     log(f"{N} ficheros · origen (raíz común): {job['base']}")
     log(f"Destino: {dest}{'   [SIMULACIÓN]' if dry else ''}")
+    scope = job.get("scope", "clips")
+    log(f"Qué copiar: {SCOPE_LABEL.get(scope, scope)}")
+    for line in big_mhl_lines(job):  # D19
+        log(line.replace("; al copiar se pide confirmación", ""))
     cards_txt = cards_summary(job.get("cards") or {})
     if cards_txt:  # D11: cuántos clips de cada tarjeta y cuáles van a medias
-        log(f"Tarjetas: {cards_txt}" + ("   [Tarjeta completa]" if job.get("full_cards") else ""))
+        log(f"Tarjetas: {cards_txt}")
+    notes = [n for rel, c in sorted((job.get("cards") or {}).items()) for n in card_notes(rel, c)]
+    for n in notes:  # D16: lo que está en la tarjeta y no en el MHL del DIT no se copia
+        log(f"  aviso: {n}")
     log("")
 
     if job.get("pause"):  # solo el autotest: tiempo en «running» para comprobar el reenganche
@@ -830,6 +1043,11 @@ def _work(job, dest, dry, log, st):
         return 1
     legacy_cache, nfc_cache, fails, records = {}, {}, [], []
     ok_count = 0
+    for card, (card_rel, kind) in sorted(cards.items()):  # D18: un .mhl ilegible bloquea el MHL, no se calla
+        if kind == "legacy":
+            legacy_cache[card] = legacy_read(card)
+            for name, why in legacy_cache[card][1]:
+                fails.append(f"MHL legacy {card_rel}/{name} ilegible: {why}")
     for n, it in enumerate(items, 1):
         st.set(n=n, file=it["rel"], fails=len(fails))
         if it.get("error"):
@@ -859,20 +1077,30 @@ def _work(job, dest, dry, log, st):
                 rec = {f: got[f] for f in fmts}
                 rec[ROOT_HASH] = got[ROOT_HASH]
             elif it["kind"] == "legacy":
-                ref = legacy_cache.setdefault(it["card"], legacy_hashes(it["card"]))
-                key = str(Path(it["src"]).relative_to(it["card"]))
+                ref = legacy_cache.setdefault(it["card"], legacy_read(it["card"]))[0]
+                key = Path(it["src"]).relative_to(it["card"]).as_posix()
                 if key not in ref:  # D17: el .mhl puede traer la ruta en la otra forma Unicode
                     key = nfc_match(key, lambda: ref, nfc_cache, ("legacy", it["card"])) or key
                 if key not in ref:
                     fails.append(f"{it['rel']}: no figura en el MHL legacy de origen"); continue
-                algo, exp = ref[key]
-                got = hash_file(dst, {algo, ROOT_HASH}, on_bytes)
-                v = got[algo]
-                if algo == "xxhash64" and v != exp:
-                    v = bytes.fromhex(v)[::-1].hex()
-                if v != exp:
-                    fails.append(f"{it['rel']}: hash distinto al del MHL legacy ({algo})"); continue
-                rec = {ROOT_HASH: got[ROOT_HASH]}
+                e = ref[key]
+                if e["size"] is not None and e["size"] != stt.st_size:  # D18: aunque el hash coincida
+                    fails.append(f"{it['rel']}: tamaño distinto al del MHL legacy ({stt.st_size} ≠ {e['size']})"); continue
+                algos = sorted(e["hashes"])
+                if not algos:
+                    if not e["null"]:
+                        fails.append(f"{it['rel']}: el MHL legacy no trae ningún hash soportado"); continue
+                    got_dst = hash_file(dst, {ROOT_HASH}, on_bytes)[ROOT_HASH]  # D18: <null> = solo tamaño
+                    if got_dst != hash_file(it["src"], {ROOT_HASH}, on_bytes)[ROOT_HASH]:
+                        fails.append(f"{it['rel']}: destino distinto del origen"); continue
+                    log(f"  aviso: el MHL legacy no deja hash para {it['rel']}: verificado origen contra destino")
+                    rec = {ROOT_HASH: got_dst}
+                else:  # D18: todos los hashes soportados de la entrada
+                    got = hash_file(dst, set(algos) | {ROOT_HASH}, on_bytes)
+                    bad = [a for a in algos if not legacy_match(a, e["hashes"][a], got[a])]
+                    if bad:
+                        fails.append(f"{it['rel']}: hash distinto al del MHL legacy ({', '.join(bad)})"); continue
+                    rec = {ROOT_HASH: got[ROOT_HASH]}
             else:
                 got_dst = hash_file(dst, {ROOT_HASH}, on_bytes)[ROOT_HASH]
                 got_src = hash_file(it["src"], {ROOT_HASH}, on_bytes)[ROOT_HASH]
@@ -946,9 +1174,12 @@ def _work(job, dest, dry, log, st):
     log(f"Copiados/verificados OK: {ok_count}/{N}   Fallos: {len(fails)}   Errores de copia: {len(errors)}")
     if cards_txt:
         log(f"Tarjetas: {cards_txt}")
+        for n in notes:
+            log(f"  aviso: {n}")
         if any(is_partial(c) for c in job["cards"].values()):
             log("  Tarjetas parciales: un verificador externo (ascmhl-debug verify, Silverstack…) dará por «missing» los"
-                " clips que no se han copiado; es cierto. «Tarjeta completa» (--full-cards) copia la tarjeta entera.")
+                " clips que no se han copiado; es cierto. «Respetar historial MHL» (--scope mhl) copia todo lo que"
+                " atestigua el MHL del DIT.")
     st.set(force=True, state=state, msg=msg, fails=len(fails))
     return result
 
@@ -1266,7 +1497,7 @@ def _say(ctx, s):
 def selftest_start(log=print, pause=SELFTEST_PAUSE_S):
     """Autotest, parte 1: en un temporal (bajo TMPDIR) crea la tarjeta sintética A001 (3 ficheros, ASC MHL con
     `ascmhl create -h xxh64`) y un fichero suelto, y lanza un trabajo REAL con launch_worker (todos los ficheros,
-    como --all). No bloquea: devuelve el contexto (`job` es None si no se pudo lanzar; el motivo va en `lines`)."""
+    como --scope all). No bloquea: devuelve el contexto (`job` es None si no se pudo lanzar; el motivo va en `lines`)."""
     ctx = {"lines": [], "log": log, "root": None, "job": None, "ascmhl": None, "dest": None, "reattach": None}
     try:
         exe = find_ascmhl()
@@ -1287,7 +1518,7 @@ def selftest_start(log=print, pause=SELFTEST_PAUSE_S):
             return ctx
         _say(ctx, f"✓ tarjeta sintética A001 (3 ficheros) con ASC MHL · {root}")
         files = sorted(str(p) for p in (card / "CLIP").iterdir()) + [str(loose)]
-        plan = build_plan(scan(files, log=lambda *_: None), camera_only=False)
+        plan = build_plan(scan(files, log=lambda *_: None), scope="all")
         dest = root / "dest"
         why = dest_conflict(plan, dest)
         if why:
@@ -1383,7 +1614,8 @@ def gui(resolve, bmd):
     disp = bmd.UIDispatcher(ui)
     project = resolve.GetProjectManager().GetCurrentProject()
     proj_name = project.GetName()
-    state = {"plan": None, "scanned": None, "label": "", "skipped": 0, "job": None, "log_size": -1, "selftest": None}
+    state = {"plan": None, "scanned": None, "label": "", "skipped": 0, "job": None, "log_size": -1, "selftest": None,
+             "whole_plan": None}
     glog = GuiLog()  # issue #7: qué pasa dentro de Resolve (botones, valores de la API, temporizador)
     ticks = TickCounter(glog)
     try:
@@ -1409,17 +1641,23 @@ def gui(resolve, bmd):
                              "Checked": True}),
             ]),
             ui.HGroup({"Weight": 0}, [
-                ui.CheckBox({"ID": "CamOnly", "Text": "Solo media de cámara (con MHL de origen)", "Checked": True}),
-                ui.CheckBox({"ID": "FullCards", "Text": "Tarjeta completa", "Checked": False}),
-                ui.CheckBox({"ID": "DryRun", "Text": "Simulación (no copia)", "Checked": False}),
-                ui.HGap(0, 1),
+                ui.Label({"Text": "<b>Qué copiar:</b>", "Weight": 0}),
+                ui.ComboBox({"ID": "Scope"}),
+                ui.CheckBox({"ID": "DryRun", "Text": "Simulación (no copia)", "Checked": False, "Weight": 0}),
                 ui.Button({"ID": "Prepare", "Text": "3 · Preparar", "Weight": 0}),
             ]),
+            ui.Label({"ID": "ScopeHelp", "Weight": 0, "WordWrap": True, "Text": SCOPE_HELP["clips"]}),
             ui.Label({"ID": "Info", "Weight": 0, "WordWrap": True, "Text": "Elige timelines y pulsa Preparar."}),
             ui.Label({"ID": "Base", "Weight": 0, "WordWrap": True}),
             ui.Label({"ID": "Progress", "Weight": 0, "WordWrap": True, "Text": ""}),
             ui.TextEdit({"ID": "Preview", "ReadOnly": True, "Weight": 3,
                          "Font": ui.Font({"Family": "Menlo", "PixelSize": 11})}),
+            ui.HGroup({"Weight": 0}, [  # D19: confirmación en línea (UIManager no trae diálogos); oculta hasta Copiar
+                ui.Label({"ID": "ConfirmText", "WordWrap": True, "Hidden": True}),
+                ui.Button({"ID": "ConfirmAll", "Text": "Copiar todo el MHL", "Weight": 0, "Hidden": True}),
+                ui.Button({"ID": "ConfirmUsed", "Text": "Solo las carpetas usadas", "Weight": 0, "Hidden": True}),
+                ui.Button({"ID": "ConfirmCancel", "Text": "Cancelar", "Weight": 0, "Hidden": True}),
+            ]),
             ui.HGroup({"Weight": 0}, [
                 ui.Label({"ID": "Status", "Text": ""}),
                 ui.Button({"ID": "Run", "Text": "4 · Copiar y verificar", "Weight": 0, "Enabled": False}),
@@ -1433,6 +1671,22 @@ def gui(resolve, bmd):
     itm = win.GetItems()
     tree = itm["TL"]
     tree.ColumnWidth[0] = 740
+    labels = [SCOPE_LABEL[k] for k in SCOPES]
+    try:
+        itm["Scope"].AddItems(labels)
+    except Exception as e:
+        glog(f"ComboBox.AddItems falla ({type(e).__name__}: {e}); se usa AddItem")
+        for t in labels:
+            itm["Scope"].AddItem(t)
+    itm["Scope"].CurrentIndex = 0
+    CONFIRM = ("ConfirmText", "ConfirmAll", "ConfirmUsed", "ConfirmCancel")
+
+    def scope():
+        return scope_from_index(itm["Scope"].CurrentIndex)
+
+    def show_confirm(on):
+        for k in CONFIRM:
+            itm[k].Hidden = not on
 
     current = project.GetCurrentTimeline()
     cur_name = current.GetName() if current else None
@@ -1455,7 +1709,8 @@ def gui(resolve, bmd):
         n_partial = sum(is_partial(c) for c in plan["cards"].values())
         itm["Info"].Text = (f"<b>{state['label']}</b> — {len(plan['items'])} ficheros · "
                             f"ASC MHL: {n['asc']} · MHL legacy: {n['legacy']} · sin MHL: {n['none']}"
-                            + (f" · <b>excluidos (no cámara): {len(plan['excluded'])}</b>" if plan["excluded"] else "")
+                            + (f" · <b>excluidos (sin MHL): {len(plan['excluded'])}</b>" if plan["excluded"] else "")
+                            + (f" · <b>MHL de nivel superior: {len(plan['big_mhl'])}</b>" if plan["big_mhl"] else "")
                             + (f" · <b>parciales: {n_partial}</b>" if n_partial else "")
                             + (f" · <font color='#e66'>no encontrados: {len(plan['missing'])}</font>" if plan["missing"] else "")
                             + (f" · {state['skipped']} items sin fichero (títulos, generadores…)" if state["skipped"] else ""))
@@ -1467,7 +1722,9 @@ def gui(resolve, bmd):
         itm["Run"].Enabled = bool(plan["items"])
 
     def set_running(running):
-        for k in ("Prepare", "Browse", "Dest", "Sub", "CamOnly", "FullCards", "DryRun", "TL", "Selftest"):
+        if running:
+            show_confirm(False)
+        for k in ("Prepare", "Browse", "Dest", "Sub", "Scope", "DryRun", "TL", "Selftest"):
             itm[k].Enabled = not running
         itm["Run"].Enabled = (not running) and bool(state["plan"] and state["plan"]["items"])
         itm["Cancel"].Enabled = running
@@ -1490,16 +1747,22 @@ def gui(resolve, bmd):
         print(f"MHL MediaManagement: {len(names)} timelines, {len(paths)} media únicos, escaneo {time.time() - t0:.1f} s")
         state["label"] = ", ".join(names) if len(names) <= 3 else f"{len(names)} timelines"
         state["skipped"] = skipped
-        state["plan"] = build_plan(state["scanned"], itm["CamOnly"].Checked, itm["FullCards"].Checked)
+        state["plan"] = build_plan(state["scanned"], scope())
         pl = state["plan"]
         glog(f"Preparar → {len(paths)} rutas, {len(pl['items'])} ficheros, {len(pl['excluded'])} excluidos,"
-             f" {len(pl['missing'])} no encontrados, {len(pl['cards'])} tarjetas · {time.time() - t0:.2f} s")
+             f" {len(pl['missing'])} no encontrados, {len(pl['cards'])} tarjetas, {len(pl['big_mhl'])} MHL de nivel"
+             f" superior · qué copiar {pl['scope']} · {time.time() - t0:.2f} s")
+        show_confirm(False)
         itm["Progress"].Text = ""
         render()
 
-    def toggle(ev):
+    def scope_changed(ev):
+        sc = scope()
+        glog(f"ComboBox.CurrentIndexChanged Scope → {itm['Scope'].CurrentIndex!r} ({sc})")
+        itm["ScopeHelp"].Text = SCOPE_HELP[sc]
+        show_confirm(False)
         if state["scanned"] is not None:
-            state["plan"] = build_plan(state["scanned"], itm["CamOnly"].Checked, itm["FullCards"].Checked)
+            state["plan"] = build_plan(state["scanned"], sc)
             render()
 
     def browse(ev):
@@ -1575,18 +1838,58 @@ def gui(resolve, bmd):
                 timer.Stop()
             set_running(False)
 
+    def checked_dest(plan):
+        """Destino final si vale para el plan; si no, None (con el motivo en Status)."""
+        base_dest = itm["Dest"].Text.strip()
+        if not base_dest or not os.path.isdir(os.path.expanduser(base_dest)):
+            itm["Status"].Text = "Elige una carpeta de destino existente."; return None
+        d = compute_dest(base_dest, itm["Sub"].Checked, proj_name)
+        why = dest_conflict(plan, d)
+        if why:
+            itm["Status"].Text = why; return None
+        return d
+
     def run(ev):
         plan = state["plan"]
         if not plan or not plan["items"]:
             itm["Status"].Text = "Nada que copiar. Pulsa Preparar."; return
-        base_dest = itm["Dest"].Text.strip()
-        if not base_dest or not os.path.isdir(os.path.expanduser(base_dest)):
-            itm["Status"].Text = "Elige una carpeta de destino existente."; return
-        d = compute_dest(base_dest, itm["Sub"].Checked, proj_name)
-        why = dest_conflict(plan, d)
-        if why:
-            itm["Status"].Text = why; return
-        glog(f"Copiar y verificar · destino {d} · simulación {itm['DryRun'].Checked!r}")
+        if checked_dest(plan) is None:
+            return
+        if plan["big_mhl"]:  # D19: un MHL que cubre más que las carpetas usadas pide confirmación
+            whole = build_plan(state["scanned"], plan["scope"], whole_mhl=True)
+            state["whole_plan"] = whole
+            b = plan["big_mhl"]
+            used = "; ".join(", ".join(f"{'(raíz)' if n == '.' else n} ({k})" for n, k in x["used_folders"]) for x in b)
+            itm["ConfirmText"].Text = ("<b>El MHL cubre más que las carpetas usadas.</b> " + " · ".join(
+                f"{x['anchor']} ({'ASC MHL' if x['kind'] == 'asc' else 'MHL legacy'}): {es_int(x['files'])} ficheros,"
+                f" {human_es(x['bytes'])}" for x in b) + f" · carpetas usadas: {used}")
+            itm["ConfirmAll"].Text = f"Copiar todo el MHL ({es_int(len(whole['items']))})"
+            itm["ConfirmUsed"].Text = f"Solo las carpetas usadas ({es_int(len(plan['items']))})"
+            show_confirm(True)
+            glog(f"D19: confirmación pedida · {len(b)} MHL de nivel superior · todo {len(whole['items'])}"
+                 f" · solo usadas {len(plan['items'])}")
+            itm["Status"].Text = "Elige qué copiar del MHL de nivel superior."
+            return
+        start(plan)
+
+    def confirm(choice):
+        def h(ev):
+            glog(f"D19: elección «{choice}»")
+            show_confirm(False)
+            if choice == "all":
+                start(state.get("whole_plan") or build_plan(state["scanned"], state["plan"]["scope"], whole_mhl=True))
+            elif choice == "used":
+                start(state["plan"])
+            else:
+                itm["Status"].Text = "Cancelado: no se ha copiado nada."
+        return h
+
+    def start(plan):
+        d = checked_dest(plan)
+        if d is None:
+            return
+        glog(f"Copiar y verificar · destino {d} · simulación {itm['DryRun'].Checked!r} · qué copiar {plan['scope']}"
+             f" · todo el MHL {plan['whole_mhl']!r}")
         d.mkdir(parents=True, exist_ok=True)
         job, err = launch_worker(job_from_plan(plan, d, itm["DryRun"].Checked, state["label"]))
         glog(f"launch_worker → error: {err}" if err else
@@ -1674,8 +1977,10 @@ def gui(resolve, bmd):
     win.On.Close.Clicked = close
     win.On.Browse.Clicked = browse
     win.On.Prepare.Clicked = prepare
-    win.On.CamOnly.Clicked = logged("CheckBox.Clicked", "CamOnly", toggle)
-    win.On.FullCards.Clicked = logged("CheckBox.Clicked", "FullCards", toggle)
+    win.On.Scope.CurrentIndexChanged = scope_changed
+    win.On.ConfirmAll.Clicked = confirm("all")
+    win.On.ConfirmUsed.Clicked = confirm("used")
+    win.On.ConfirmCancel.Clicked = confirm("cancel")
     win.On.Sub.Clicked = logged("CheckBox.Clicked", "Sub", lambda ev: render())
     win.On.DryRun.Clicked = logged("CheckBox.Clicked", "DryRun", lambda ev: None)
     win.On.Run.Clicked = run
@@ -1723,9 +2028,13 @@ def cli(argv):
     ap.add_argument("--status")
     ap.add_argument("--files", type=Path)
     ap.add_argument("--dest", type=Path)
-    ap.add_argument("--all", action="store_true", help="incluir ficheros sin MHL de origen")
+    ap.add_argument("--scope", choices=SCOPES, default="clips",
+                    help="qué copiar (D16): clips del timeline, todo lo que atestigua el MHL del DIT, o eso más lo que"
+                         " no tiene MHL")
+    ap.add_argument("--all", action="store_true", help="alias de --scope all")
+    ap.add_argument("--whole-mhl", action="store_true",
+                    help="con --scope mhl/all, copiar todo un MHL de nivel superior, no solo las carpetas usadas (D19)")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--full-cards", action="store_true", help="copiar cada tarjeta entera (Tarjeta completa, D11)")
     ap.add_argument("--diag", action="store_true", help="diagnóstico del entorno (intérprete, ascmhl, carpetas)")
     ap.add_argument("--selftest", action="store_true", help="autotest: trabajo real sobre una tarjeta sintética")
     ap.add_argument("--keep", action="store_true", help="con --selftest, conservar la carpeta temporal")
@@ -1740,13 +2049,18 @@ def cli(argv):
         return 0 if ok else 1
     if a.files and a.dest:
         paths = [l.strip() for l in a.files.read_text(encoding="utf-8").splitlines() if l.strip()]
-        plan = build_plan(scan(paths, log=lambda *_: None), camera_only=not a.all, full_cards=a.full_cards)
+        plan = build_plan(scan(paths, log=lambda *_: None), "all" if a.all else a.scope, whole_mhl=a.whole_mhl)
         if not plan["items"]:
             print("Nada que copiar."); return 2
+        print(f"Qué copiar: {SCOPE_LABEL[plan['scope']]}")
+        for line in big_mhl_lines(plan):  # D19
+            print(line.replace("al copiar se pide confirmación", "--whole-mhl copia todo el MHL"))
         for rel, c in sorted(plan["cards"].items()):
             print(card_line(rel, c))
+            for n in card_notes(rel, c):
+                print(f"  aviso: {n}")
         for e in sorted({e["group"] for e in plan["excluded"]}):
-            print(f"excluido (no cámara): {e}")
+            print(f"excluido (sin MHL de origen): {e}")
         for m in plan["missing"]:
             print(f"no encontrado: {m}")
         why = dest_conflict(plan, a.dest.resolve())
