@@ -91,21 +91,21 @@ def test_varios_hashes_uno_mal_falla(tmp_path):
                                   f"<md5>{hashlib.md5(d).hexdigest()}</md5><xxhash>1</xxhash></hash>"])
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, [c], dest)
-    assert r.returncode == 1 and "hash distinto al del MHL legacy (xxhash)" in out(r)
+    assert r.returncode == 1 and "hash differs from the legacy MHL (xxhash)" in out(r)
     assert not (dest / "ascmhl").exists()
 
 
 def test_null_con_size_verifica_origen_contra_destino(tmp_path, ascmhl_debug_cli):
     card, clips = card_with(tmp_path, [["null"]])
     r, _ = run_ok(tmp_path, clips, ascmhl_debug_cli)
-    assert "el MHL legacy no deja hash para B001/CLIP/B001C001.mov" in out(r)
+    assert "the legacy MHL leaves no hash for B001/CLIP/B001C001.mov" in out(r)
 
 
 def test_size_distinto_falla_aunque_el_hash_cuadre(tmp_path):
     card, clips = card_with(tmp_path, [["xxhash64be"]], size=123)
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, clips, dest)
-    assert r.returncode == 1 and "tamaño distinto al del MHL legacy" in out(r)
+    assert r.returncode == 1 and "size differs from the legacy MHL" in out(r)
     assert not (dest / "ascmhl").exists()
 
 
@@ -114,7 +114,7 @@ def test_rutas_con_barra_invertida_y_subcarpetas(tmp_path, ascmhl_debug_cli):
     clips = [write_bin(card / "CLIP" / "SUB" / f"B001C00{i}.mov", seed=i) for i in (1, 2)]
     write_mhl(card / "B001.mhl", [entry(f"CLIP/SUB/{c.name}", c.read_bytes(), ["xxhash64be"], sep="\\") for c in clips])
     r, dest = run_ok(tmp_path, clips, ascmhl_debug_cli)
-    assert "[MHL legacy] B001 — 2 de 2 clips" in out(r)
+    assert "[legacy MHL] B001 — 2 of 2 clips" in out(r)
 
 
 def test_mhl_un_nivel_por_encima_de_la_tarjeta(tmp_path, mp, ascmhl_debug_cli):
@@ -124,7 +124,7 @@ def test_mhl_un_nivel_por_encima_de_la_tarjeta(tmp_path, mp, ascmhl_debug_cli):
     (day / "A001" / "CLIPS" / "otro.mhl").write_text('<hashlist version="1.1"></hashlist>')  # más cerca, no lo cita
     assert mp.FS().card_for(c.parent, c.name) == (day, "legacy")
     r, dest = run_ok(tmp_path, [c], ascmhl_debug_cli)
-    assert "[MHL legacy] DIA_03 — 1 de 1 clips" in out(r)
+    assert "[legacy MHL] DIA_03 — 1 of 1 clips" in out(r)
     assert (dest / "DIA_03" / "x.mhl").is_file() and (dest / "DIA_03" / "A001" / "CLIPS" / "x.mov").is_file()
 
 
@@ -136,6 +136,6 @@ def test_mhl_ilegible_da_error_limpio_y_no_hay_mhl(tmp_path, mp):
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, [c], dest)
     assert r.returncode == 1, out(r)
-    assert "MHL legacy B001/B001.mhl ilegible:" in out(r) and "ERROR INESPERADO" not in out(r)
+    assert "legacy MHL B001/B001.mhl unreadable:" in out(r) and "UNEXPECTED ERROR" not in out(r)
     assert not (dest / "ascmhl").exists()
     assert mhl_files(dest / "B001") == ["B001.mhl"]  # copiado tal cual, sin generación nueva

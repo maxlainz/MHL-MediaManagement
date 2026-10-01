@@ -69,7 +69,7 @@ def test_md5_en_mayusculas_del_dit_falla_limpio(tmp_path):
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, [clip], dest)
     assert r.returncode == 1, out(r)
-    assert "hash distinto" in out(r)
+    assert "hash differs" in out(r)
     assert not (dest / "ascmhl").exists()
     assert sorted(p.name for p in (dest / "A001" / "ascmhl").iterdir()) == gens  # sin generación nueva
     assert sorted(p.name for p in (card / "ascmhl").iterdir()) == gens
@@ -83,7 +83,7 @@ def test_relanzado_con_fichero_cambiado_no_escribe_failed(tmp_path, media, ascmh
     write_bin(gfx, seed=6, size=1500)  # re-exportado: otro contenido y otro tamaño
     r = run_pull(tmp_path, [*media["clips"], gfx], dest, "--all")
     assert r.returncode == 1, out(r)
-    assert "generación anterior" in out(r)
+    assert "previous generation" in out(r)
     assert len(mhl_files(dest / "ascmhl")) == 1
     assert not [p for p in dest.rglob("*.mhl") if 'action="failed"' in p.read_text()]
 
@@ -177,8 +177,8 @@ def test_ascmhl_incompleto_en_destino_falla_claro(tmp_path, media):
     shutil.copy2(media["card"] / "ascmhl" / "ascmhl_chain.xml", dest / "A001" / "ascmhl")
     r = run_pull(tmp_path, media["clips"], dest)
     assert r.returncode == 1, out(r)
-    assert "ERROR INESPERADO" not in out(r)
-    assert "A001/ascmhl" in out(r) and "relanza" in out(r)
+    assert "UNEXPECTED ERROR" not in out(r)
+    assert "A001/ascmhl" in out(r) and "run again" in out(r)
     assert not (dest / "ascmhl").exists()
 
 
@@ -203,9 +203,9 @@ def test_tarjeta_parcial_avisa_y_verify_da_missing(tmp_path, media, ascmhl_debug
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, media["clips"][:1], dest)
     assert r.returncode == 0, out(r)
-    assert "[ASC MHL] A001 — 1 de 3 clips (parcial)" in out(r)
-    assert "Tarjetas: A001 1/3 (parcial)" in out(r)
-    assert "parcial: A001 1/3" in root_manifest(dest)
+    assert "[ASC MHL] A001 — 1 of 3 clips (partial)" in out(r)
+    assert "Cards: A001 1/3 (partial)" in out(r)
+    assert "partial: A001 1/3" in root_manifest(dest)
     assert not (dest / "A001" / "CLIP" / "A001C002.mov").exists()
     # esperado (D11): el historial del DIT copiado tal cual lista clips que no se han copiado
     v = verify(tmp_path, ascmhl_debug_cli, dest)
@@ -216,10 +216,10 @@ def test_respetar_historial_verifica_limpio(tmp_path, media, ascmhl_debug_cli):
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, media["clips"][:1], dest, "--scope", "mhl")
     assert r.returncode == 0, out(r)
-    assert "[ASC MHL] A001 — 3 de 3 clips" in out(r) and "parcial" not in out(r)
+    assert "[ASC MHL] A001 — 3 of 3 clips" in out(r) and "partial" not in out(r)
     for c in media["clips"]:
         assert (dest / c.relative_to(media["src"])).is_file()
-    assert "parcial" not in root_manifest(dest)
+    assert "partial" not in root_manifest(dest)
     v = verify(tmp_path, ascmhl_debug_cli, dest)
     assert v.returncode == 0, out(v)
 
@@ -229,9 +229,9 @@ def test_respetar_historial_legacy_no_duplica_el_mhl(tmp_path, ascmhl_debug_cli)
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, clips[:1], dest, "--scope", "mhl")
     assert r.returncode == 0, out(r)
-    assert "[MHL legacy] B001 — 2 de 2 clips" in out(r)
-    assert "2 ficheros" in out(r)  # items: los 2 clips; el .mhl va aparte (fase 1)
-    assert out(r).count("MHL copiado: B001/B001.mhl") == 1
+    assert "[legacy MHL] B001 — 2 of 2 clips" in out(r)
+    assert "2 files" in out(r)  # items: los 2 clips; el .mhl va aparte (fase 1)
+    assert out(r).count("MHL copied: B001/B001.mhl") == 1
     assert (dest / "B001" / "CLIP" / clips[1].name).is_file()
     assert root_manifest(dest).count("B001.mhl") == 1
     v = verify(tmp_path, ascmhl_debug_cli, dest)
@@ -250,7 +250,7 @@ def test_mhl_legacy_suelto_en_tarjeta_asc(tmp_path, ascmhl_cli, ascmhl_debug_cli
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, clips[:1], dest, "--scope", "mhl")
     assert r.returncode == 0, out(r)
-    assert "[ASC MHL] A001 — 3 de 3 clips" in out(r) and "[MHL legacy]" not in out(r)
+    assert "[ASC MHL] A001 — 3 of 3 clips" in out(r) and "[legacy MHL]" not in out(r)
     assert (dest / "A001" / "ascmhl").is_dir() and (dest / "A001" / "CLIP" / "old.mhl").is_file()
     v = verify(tmp_path, ascmhl_debug_cli, dest)
     assert v.returncode == 0, out(v)

@@ -51,7 +51,7 @@ def test_corrupcion_no_crea_mhl(tmp_path, media):
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, media["clips"], dest)
     assert r.returncode != 0, out(r)
-    assert "hash distinto" in out(r)
+    assert "hash differs" in out(r)
     assert not (dest / "ascmhl").exists()
 
 
@@ -59,7 +59,7 @@ def test_sin_all_excluye_lo_que_no_es_camara(tmp_path, media):
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, [*media["clips"], media["wav"]], dest)
     assert r.returncode == 0, out(r)
-    assert "excluido" in out(r)
+    assert "excluded" in out(r)
     assert not (dest / "audio" / "x.wav").exists()
     assert (dest / "A001" / "CLIP" / "A001C001.mov").is_file()
 
@@ -68,7 +68,7 @@ def test_all_incluye_fichero_sin_mhl(tmp_path, media):
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, [*media["clips"], media["wav"]], dest, "--all")
     assert r.returncode == 0, out(r)
-    assert "excluido" not in out(r)
+    assert "excluded" not in out(r)
     assert filecmp.cmp(media["wav"], dest / "audio" / "x.wav", shallow=False)
     assert (dest / "ascmhl").is_dir()
 
@@ -77,7 +77,7 @@ def test_dry_run_no_copia(tmp_path, media):
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, [*media["clips"], media["wav"]], dest, "--all", "--dry-run")
     assert r.returncode == 0, out(r)
-    assert "Simulación" in out(r)
+    assert "Dry run" in out(r)
     assert not dest.exists() or not any(dest.rglob("*"))
 
 
@@ -86,7 +86,7 @@ def test_relanzado_crea_generacion_nueva(tmp_path, media, ascmhl_debug_cli):
     assert run_pull(tmp_path, media["clips"], dest).returncode == 0
     r = run_pull(tmp_path, media["clips"], dest)
     assert r.returncode == 0, out(r)
-    assert "ya existe" in out(r)  # no se recopia lo que ya está
+    assert "already exists" in out(r)  # no se recopia lo que ya está
     assert len(mhl_files(dest / "ascmhl")) == 2
     v = subprocess.run([ascmhl_debug_cli, "verify", str(dest)], capture_output=True, text=True,
                        env=isolated_env(tmp_path))
@@ -126,7 +126,7 @@ def test_nombre_nfc_nfd(tmp_path, keeps_form, ascmhl_cli, ascmhl_debug_cli, disk
     if in_mhl == disk:
         assert v.returncode == 0, out(v)
     else:  # H10: la referencia compara rutas como cadenas; ya da «missing» sobre la tarjeta de origen
-        assert "otra forma Unicode" in out(r)
+        assert "another Unicode form" in out(r)
         assert v.returncode == 10 and "missing" in out(v), out(v)
         o = subprocess.run([ascmhl_debug_cli, "verify", str(card)], capture_output=True, text=True,
                            env=isolated_env(tmp_path))

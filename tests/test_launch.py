@@ -102,7 +102,7 @@ def test_launch_worker_rechaza_otra_version_de_ascmhl(tmp_path, mp, monkeypatch,
 def test_launch_worker_rechaza_python_sin_ascmhl(tmp_path, mp, monkeypatch, work_dirs):
     fake_ascmhl(tmp_path, monkeypatch, mp, "#!/bin/sh\necho \"ModuleNotFoundError: No module named 'ascmhl'\" >&2\nexit 1\n")
     job, err = mp.launch_worker({"items": []})
-    assert job is None and "no puede importar" in err and "No module named" in err
+    assert job is None and "cannot import" in err and "No module named" in err
 
 
 def test_launch_worker_cierra_stderr_y_lo_devuelve(tmp_path, mp, monkeypatch, work_dirs):
@@ -142,10 +142,10 @@ def write_status(mp, stamp, content):
 def test_reenganche_rechaza_pid_de_otro_proceso(mp, work_dirs):
     proc = subprocess.Popen(["sleep", "30"])
     try:
-        sp = write_status(mp, "20260101_000000", {"pid": proc.pid, "state": "running", "phase": "Copia"})
+        sp = write_status(mp, "20260101_000000", {"pid": proc.pid, "state": "running", "phase": "Copy"})
         assert mp.find_running_job() is None
         d = json.loads(sp.read_text())
-        assert d["state"] == "failed" and d["msg"] == "El proceso ya no existe"
+        assert d["state"] == "failed" and d["msg"] == "The process no longer exists"
     finally:
         proc.kill()
         proc.wait()
@@ -212,20 +212,20 @@ def test_job_outcome_sin_estado_final_muestra_stderr(tmp_path, mp):
     ep = tmp_path / "stderr.txt"
     ep.write_text("".join(f"línea {i}\n" for i in range(30)))
     st, msg, extra = mp.job_outcome({"state": "running"}, True, str(sp), str(ep))
-    assert st == "failed" and "sin estado final" in msg
+    assert st == "failed" and "without a final status" in msg
     assert extra.splitlines() == [f"línea {i}" for i in range(10, 30)]
 
 
 def test_job_outcome_en_marcha_y_terminados(tmp_path, mp):
     nada = str(tmp_path / "no_existe.json")
     assert mp.job_outcome({"state": "running"}, False, nada, None)[0] == "running"
-    assert mp.job_outcome({"state": "cancelled", "msg": "Cancelado"}, False, nada, None) == ("cancelled", "Cancelado", "")
-    assert mp.job_outcome({}, True, nada, nada) == ("failed", "El proceso terminó sin estado final (ver log)", "")
+    assert mp.job_outcome({"state": "cancelled", "msg": "Cancelled"}, False, nada, None) == ("cancelled", "Cancelled", "")
+    assert mp.job_outcome({}, True, nada, nada) == ("failed", "The process ended without a final status (see log)", "")
 
 
 def test_cancelar_no_se_ofrece_mientras_se_escribe_el_mhl(mp):
     assert not mp.cancel_allowed({"phase": "MHL"})
-    assert mp.cancel_allowed({"phase": "Copia"}) and mp.cancel_allowed({"phase": "Verificación"}) and mp.cancel_allowed({})
+    assert mp.cancel_allowed({"phase": "Copy"}) and mp.cancel_allowed({"phase": "Verification"}) and mp.cancel_allowed({})
 
 
 # ---------------- destino ----------------

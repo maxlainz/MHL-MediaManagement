@@ -53,9 +53,9 @@ def test_dest_conflict(tmp_path, mp):
     src, card, clip, wav = _arbol(tmp_path)
     plan = mp.build_plan(mp.scan([str(clip), str(wav)], log=lambda *_: None), scope="all")
     assert mp.dest_conflict(plan, tmp_path / "dest") is None
-    assert "dentro de una carpeta de origen" in mp.dest_conflict(plan, card / "sub")
-    assert "dentro de una carpeta de origen" in mp.dest_conflict(plan, src / "audio")
-    assert "sobre sí mismo" in mp.dest_conflict(plan, src)
+    assert "inside a source folder" in mp.dest_conflict(plan, card / "sub")
+    assert "inside a source folder" in mp.dest_conflict(plan, src / "audio")
+    assert "onto itself" in mp.dest_conflict(plan, src)
 
 
 # ---------- dest_conflict: solapes con cualquier origen, enlaces y colisiones (A1–A3) ----------
@@ -68,7 +68,7 @@ def test_dest_conflict_encima_de_otro_origen(tmp_path, mp):
     otro = write_bin(src / "B" / "A001" / "CLIP" / "A001C001.mov", seed=2, size=16)
     plan = mp.build_plan(mp.scan([str(clip), str(otro)], log=lambda *_: None), scope="all")
     assert mp.dest_conflict(plan, tmp_path / "dest") is None
-    assert "otro fichero de origen" in mp.dest_conflict(plan, src / "B")
+    assert "another source file" in mp.dest_conflict(plan, src / "B")
 
 
 def test_dest_conflict_dentro_de_carpeta_de_origen_ajena(tmp_path, mp):
@@ -79,7 +79,7 @@ def test_dest_conflict_dentro_de_carpeta_de_origen_ajena(tmp_path, mp):
     otro = write_bin(src / "B" / "A001" / "CLIP" / "otro.mov", seed=2, size=16)
     plan = mp.build_plan(mp.scan([str(clip), str(otro)], log=lambda *_: None), scope="all")
     # DEST/A001/CLIP = src/B/A001/CLIP, carpeta de origen de otro.mov (y DEST/A001 recibiría el ascmhl/)
-    assert "dentro de una carpeta de origen" in mp.dest_conflict(plan, src / "B")
+    assert "inside a source folder" in mp.dest_conflict(plan, src / "B")
 
 
 def test_dest_conflict_a_traves_de_enlace(tmp_path, mp):
@@ -91,8 +91,8 @@ def test_dest_conflict_a_traves_de_enlace(tmp_path, mp):
     plan = mp.build_plan(mp.scan([str(alias / clip.relative_to(real))], log=lambda *_: None), scope="clips")
     assert plan["items"][0]["kind"] == "asc"
     assert mp.dest_conflict(plan, tmp_path / "dest") is None
-    assert "dentro de una carpeta de origen" in mp.dest_conflict(plan, real / "A001")
-    assert "sobre sí mismo" in mp.dest_conflict(plan, real)
+    assert "inside a source folder" in mp.dest_conflict(plan, real / "A001")
+    assert "onto itself" in mp.dest_conflict(plan, real)
 
 
 def test_build_plan_colision_de_rutas_con_raiz_barra(mp):
@@ -102,7 +102,7 @@ def test_build_plan_colision_de_rutas_con_raiz_barra(mp):
     plan = mp.build_plan({"items": items, "missing": []}, scope="all")
     assert str(plan["base"]) == "/"
     assert plan["collisions"] and plan["collisions"][0][0] == "X/a.mov"
-    assert "mismo sitio" in mp.dest_conflict(plan, Path("/X/dest"))
+    assert "same place" in mp.dest_conflict(plan, Path("/X/dest"))
 
 
 # ---------- expand / FS: corchetes solo en el nombre, sin stat por fichero, montajes (B) ----------
@@ -216,15 +216,15 @@ def _card_line(lines):
 def test_plan_tarjeta_parcial_y_respetar_historial(tmp_path, mp, media):
     plan = _plan(mp, media["clips"][:1])
     assert plan["cards"] == {"A001": {"kind": "asc", "used": 1, "total": 3}}
-    assert "[ASC MHL] A001 — 1 de 3 clips (parcial)" in _card_line(mp.preview_lines(plan))
+    assert "[ASC MHL] A001 — 1 of 3 clips (partial)" in _card_line(mp.preview_lines(plan))
     full = _plan(mp, media["clips"][:1], "mhl")
     assert full["cards"] == {"A001": {"kind": "asc", "used": 3, "total": 3, "unlisted": 0, "absent": 0}}
     assert sorted(it["rel"] for it in full["items"]) == [f"A001/CLIP/A001C00{i}.mov" for i in (1, 2, 3)]
     assert not any("ascmhl" in it["rel"] for it in full["items"]) and not full["big_mhl"]
     lines = mp.preview_lines(full)
-    assert lines[0] == f"Qué copiar: {mp.SCOPE_LABEL['mhl']} — {mp.SCOPE_HELP['mhl']}"
-    assert "[ASC MHL] A001 — 3 de 3 clips" in _card_line(lines) and "parcial" not in _card_line(lines)
-    assert any("resto de lo que atestigua el MHL  (2 ficheros)" in s for s in lines)
+    assert lines[0] == f"What to copy: {mp.SCOPE_LABEL['mhl']} — {mp.SCOPE_HELP['mhl']}"
+    assert "[ASC MHL] A001 — 3 of 3 clips" in _card_line(lines) and "partial" not in _card_line(lines)
+    assert any("rest of what the MHL attests  (2 files)" in s for s in lines)
     job = mp.job_from_plan(full, tmp_path / "dest", False, "t")
     assert job["scope"] == "mhl" and job["whole_mhl"] is False and job["cards"]["A001"]["used"] == 3
     assert mp.json.loads(mp.json.dumps(job)) == job
@@ -237,7 +237,7 @@ def test_plan_total_desconocido_si_el_manifiesto_no_se_entiende(tmp_path, mp):
     (card / "ascmhl" / "0001_A001_roto.mhl").write_text("<hashlist><hashes><hash>")  # XML a medias
     plan = _plan(mp, [clip])
     assert plan["cards"]["A001"] == {"kind": "asc", "used": 1, "total": None}
-    assert _card_line(mp.preview_lines(plan)).strip() == "[ASC MHL] A001 — 1 clips (total desconocido)"
+    assert _card_line(mp.preview_lines(plan)).strip() == "[ASC MHL] A001 — 1 clips (total unknown)"
     assert mp.cards_summary(plan["cards"]) == "A001 1/?"
     assert mp.cards_summary(plan["cards"], only_partial=True) == ""
 
@@ -250,7 +250,7 @@ def test_plan_legacy_cuenta_y_respeta_historial_sin_el_mhl(tmp_path, mp):
     (card / "B001.MHL").write_text(f"<hashlist version=\"1.1\">{entries}</hashlist>")
     plan = _plan(mp, clips[:2])
     assert plan["cards"]["B001"] == {"kind": "legacy", "used": 2, "total": 4}
-    assert mp.cards_summary(plan["cards"]) == "B001 2/4 (parcial)"
+    assert mp.cards_summary(plan["cards"]) == "B001 2/4 (partial)"
     full = _plan(mp, clips[:2], "mhl")
     assert sorted(it["rel"] for it in full["items"]) == [f"B001/CLIP/{c.name}" for c in clips]
     assert full["cards"]["B001"]["used"] == 4 and full["cards"]["B001"]["unlisted"] == 0
@@ -260,12 +260,12 @@ def test_mhl_comment_solo_nombra_las_parciales(mp):
     cards = {"A001": {"kind": "asc", "used": 2, "total": 37}, "B001": {"kind": "asc", "used": 5, "total": 5},
              "C001": {"kind": "legacy", "used": 1, "total": 12}}
     assert mp.mhl_comment({"label": "TL", "cards": cards}) == \
-        "MHL MediaManagement: media management TL; qué copiar: clips del timeline; parcial: A001 2/37, C001 1/12"
+        "MHL MediaManagement: media management TL; scope: timeline clips; partial: A001 2/37, C001 1/12"
     assert mp.mhl_comment({"label": "TL", "scope": "mhl", "cards": {"B001": cards["B001"]}}) == \
-        "MHL MediaManagement: media management TL; qué copiar: historial MHL"
+        "MHL MediaManagement: media management TL; scope: MHL history"
     assert mp.mhl_comment({"label": "TL", "scope": "mhl", "whole_mhl": True, "cards": {}}) == \
-        "MHL MediaManagement: media management TL; qué copiar: historial MHL (todo el MHL)"
-    assert mp.cards_summary(cards) == "A001 2/37 (parcial), B001 5/5, C001 1/12 (parcial)"
+        "MHL MediaManagement: media management TL; scope: MHL history (whole MHL)"
+    assert mp.cards_summary(cards) == "A001 2/37 (partial), B001 5/5, C001 1/12 (partial)"
 
 
 # ---------- D17 (#4): NFC y NFD de un mismo nombre ----------
