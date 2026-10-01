@@ -111,5 +111,11 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - **Elección**: la vista previa marca el caso («MHL de nivel superior: cubre N ficheros») y, al pulsar Copiar, un aviso muestra el MHL (ruta, tipo, ficheros, tamaño) y las carpetas usadas, con tres salidas: **Copiar todo el MHL**, **Solo las carpetas usadas** (lo que atestigua el MHL dentro de ellas), **Cancelar**. «Carpeta usada» = la primera carpeta bajo el MHL (`DIA_03/A001/…` → `A001`). En CLI, `--scope mhl` se limita a las carpetas usadas salvo `--whole-mhl`. La elección queda en el log.
 - 2026-10-01.
 
+## D20 — La salvaguarda de D19 solo salta cuando el MHL cubre varias tarjetas
+- **Contexto**: con «carpeta usada = primer nivel bajo el MHL», una tarjeta RED (un `.RDC` por clip) o cualquier tarjeta con subcarpetas por clip hacía saltar el aviso y, en CLI, limitaba la copia a los clips usados: lo contrario de «tarjetas/reels enteros».
+- **Opciones**: solo si el MHL cubre varias tarjetas (criterio estructural); por tamaño de lo no usado; preguntar siempre, una vez por MHL.
+- **Elección**: criterio estructural. Un MHL es «de varias tarjetas» si al menos dos carpetas de primer nivel tienen más de `CARD_MIN_FILES` (20) ficheros atestiguados cada una y el timeline usa solo algunas; si no, la carpeta del MHL es una tarjeta y «Respetar historial MHL» copia todo lo que atestigua, sin aviso. En el caso de varias tarjetas, el aviso explica con cifras las dos salidas: «Copiar todo el MHL» (a efectos prácticos, el día entero) y «Solo las carpetas usadas» (tarjetas usadas enteras + el MHL del DIT tal cual; un verificador externo dirá que faltan las otras; el comentario del manifiesto lo deja escrito como «parcial: DIA_03 2/4 tarjetas»). Ninguna herramienta comercial (YoYotta Conform, Hedge OffShoot, Silverstack) documenta este caso, así que el texto tiene que explicarse solo.
+- 2026-10-01.
+
 ## Pendiente de decidir (owner)
 - Si la nota de proyecto `MHL MediaManagement` entra en el vault de Obsidian (área `#archivo`) y cuándo.

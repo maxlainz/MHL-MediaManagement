@@ -11,7 +11,7 @@ mhl_mediamanagement.py el script entero (GUI + worker + CLI); en Resolve, Worksp
 install.sh             copia o enlaza el script en Scripts/Utility de Resolve e instala ascmhl
 .claude/rules/         normas (una por archivo)        .claude/skills/   release · obsidian-vault
 .claude/settings.json  hooks: pull + issues al arrancar · bloqueo de rutas al escribir · bloqueo de commit en main · push al cerrar
-docs/decisiones.md     ADRs D1–Dn                      docs/bitacora/    una entrada por sesión (00-arranque, 01-renombrado-y-debug)
+docs/decisiones.md     ADRs D1–Dn                      docs/bitacora/    una entrada por sesión (00 arranque · 01 renombrado y debug · 02 entrevista y alcance)
 docs/arquitectura.md   cómo está hecho el script; hallazgos H1–H11
 docs/contexto-estudio.md  qué exige el estudio, en genérico   docs/roadmap.md  versiones previstas
 tests/                 pytest (81): humo del modo CLI, plan, worker/conformidad, lanzamiento/reenganche, versión
@@ -48,7 +48,7 @@ Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
 ## Docs
 | Archivo | Leer cuando… |
 |---|---|
-| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D19; pendientes del owner al final) |
+| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D20; pendientes del owner al final) |
 | `docs/arquitectura.md` | Vas a tocar cualquier función del script, el worker, el estado o los hashes; hallazgos H1–H11 |
 | `docs/contexto-estudio.md` | Necesitas saber qué exige el estudio del media management y del MHL |
 | `docs/roadmap.md` | Dudas de qué entra en cada versión |
@@ -73,8 +73,8 @@ Requisitos: `uv`, Python ≥ 3.11 (CI usa 3.12). Para la GUI: Resolve Studio y P
 ASC MHL Specification v1.0 (2022-03-15) e Implementation Guidelines v1.0 (2023-03-29), `ascmitc/mhl-specification` · `ascmhl` **1.2** (PyPI 2025-07-04, Python ≥ 3.11, MIT). Subir versión es decisión del owner.
 
 ## Estado y siguiente paso
-- **Estado (2026-10-01, bitácora 01)**: issue #1 implementado (script `mhl_mediamanagement.py`, menú «MHL MediaManagement», carpetas nuevas, `__version__` 0.2.0, ruff sin ignores; D9, D10). Revisión adversarial con subagentes: 24 fallos corregidos en tres commits (destino que pisaba el origen o el `ascmhl/` del DIT, intérprete `/bin/sh`, manifiestos con `action="failed"`, reenganche a PID ajeno, `stat` por clip…), 81 tests. Hallazgos H6–H9 en `docs/arquitectura.md`. Sin tag.
-- **Después**: implementar D11 (#2, casilla «Tarjeta completa» y aviso de parcial) y D12 (#3) → prueba del owner en Resolve → `v0.2.0` (skill `release`). Roadmap D13: v0.3.0 inglés, v0.4.0 clips de varios ficheros (#5), v0.5.0 varios destinos (D14).
+- **Estado (2026-10-01, bitácora 02)**: todo por PR con `main` protegida (D15). En `main`: renombrado (#1), correcciones de la revisión adversarial, tarjeta parcial y selector «Qué copiar» (D11, D16), ASC gana sobre legacy (D12), NFC/NFD (D17), MHL legacy 1.x completo (D18, H11), salvaguarda del MHL de varias tarjetas (D19, D20), diagnóstico + autotest + log de la ventana (#7). 137 tests. Sin tag.
+- **Después**: prueba del owner en Resolve (Diagnóstico → Autotest → trabajo real → cerrar y reabrir) → `v0.2.0` (skill `release`, por PR) → merge del PR de inglés (v0.3.0, D13) → v0.4.0 clips de varios ficheros (#5, tras #7) → v0.5.0 varios destinos (D14).
 
 ## Pendiente del owner (2026-10-01)
 - Probar la versión en Resolve (#1) y las comprobaciones de #7.
