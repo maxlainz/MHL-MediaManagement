@@ -230,8 +230,8 @@ def test_cancelar_no_se_ofrece_mientras_se_escribe_el_mhl(mp):
 
 # ---------------- destino ----------------
 
-@pytest.mark.parametrize("raw,want", [(".", "PROYECTO"), ("..", "PROYECTO"), ("...", "PROYECTO"), (" .. ", "PROYECTO"),
-                                      ("", "PROYECTO"), ("  ", "PROYECTO"), ("a/b", "a_b"), ("Proj:1", "Proj_1"),
+@pytest.mark.parametrize("raw,want", [(".", "PROJECT"), ("..", "PROJECT"), ("...", "PROJECT"), (" .. ", "PROJECT"),
+                                      ("", "PROJECT"), ("  ", "PROJECT"), ("a/b", "a_b"), ("Proj:1", "Proj_1"),
                                       ("AAAA-MM_CLIENTE-CAMPANA", "AAAA-MM_CLIENTE-CAMPANA"), (".oculto", ".oculto")])
 def test_safe_name(mp, raw, want):
     assert mp.safe_name(raw) == want

@@ -1290,7 +1290,7 @@ def _work(job, dest, dry, log, st):
 def safe_name(s):
     """Nombre de carpeta sin separadores; nunca vacío ni solo puntos («.», «..» → PROYECTO)."""
     n = re.sub(r'[/:\\]+', "_", s or "").strip()
-    return n if n.strip(".") else "PROYECTO"
+    return n if n.strip(".") else "PROJECT"
 
 
 def compute_dest(base_text, sub_checked, proj_name):
