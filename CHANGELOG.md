@@ -7,6 +7,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado
 - `__version__` en el script (constante sincronizada con `pyproject.toml` por `tests/test_version.py`, D10); se muestra en el título de la ventana y en la cabecera del log.
 
 ### Añadido (continuación)
+- Diagnóstico y autotest para la prueba en Resolve (#7): botón «Diagnóstico» (y `--diag`) que informa de intérprete, `ascmhl`, carpetas, timer y estados recientes, guardado en `diagnostico_<fecha>.txt`; botón «Autotest» (y `--selftest`) que crea una tarjeta sintética y lanza un trabajo real por el worker, comprueba el reenganche y verifica con `ascmhl-debug`; log de eventos de la ventana `gui_<fecha>.log` (botones, diálogos, qué evento del timer dispara y cuántas veces). La cabecera de cada log de trabajo dice qué intérprete y qué `ascmhl` lo ejecutaron.
 - Tarjeta parcial (D11, #2): la vista previa, el log, el resumen y el `comment` del manifiesto raíz dicen cuántos clips de cada tarjeta van («A001 — 2 de 37 clips (parcial)»); el total se lee de los manifiestos del DIT, sin recorrer la tarjeta. Casilla «Tarjeta completa» (CLI `--full-cards`) que copia el resto de la tarjeta sin `stat` por fichero.
 - Un ASC MHL en cualquier ancestro gana sobre un `.mhl` legacy más cercano (D12, #3).
 
