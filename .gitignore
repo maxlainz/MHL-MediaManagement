@@ -1,0 +1,26 @@
+# Entorno local
+.venv/
+venv/
+.env
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+# Estado de ejecución del script (nunca se versiona)
+*.mhlpull_part
+# Material del owner / del estudio (repo público: ver .claude/rules/repo-publico.md)
+scripts/leak-patterns.local.txt
+samples/*
+!samples/README.md
+*.mov
+*.mxf
+*.exr
+*.pdf
+*.drp
+# Claude Code
+.claude/worktrees/
+.claude/settings.local.json
+# macOS
+.DS_Store
+._*

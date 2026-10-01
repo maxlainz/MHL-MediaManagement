@@ -1,0 +1,40 @@
+[project]
+name = "mhl-mediamanagement"
+version = "0.1.0"
+description = "Media management for DaVinci Resolve that honours the DIT's source MHL and writes an ASC MHL of everything copied"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Max Lainz" }]
+requires-python = ">=3.11"
+dependencies = [
+  # D6: la referencia es el oráculo de conformidad; subir versión es decisión del owner.
+  "ascmhl==1.2",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.8",
+]
+
+[tool.uv]
+# Script único, no un paquete instalable.
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+# D8: avisos actuales de mhl_pull.py (F401 shlex sin usar, F841 variable fd); no se toca código en el arranque.
+# Se retiran en el issue #1 (commit de código del renombrado).
+ignore = ["F401", "F841"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+  # ascmhl 1.2 usa 'gitwildmatch' (deprecado en pathspec); no es nuestro código
+  "ignore:GitWildMatchPattern:DeprecationWarning",
+]

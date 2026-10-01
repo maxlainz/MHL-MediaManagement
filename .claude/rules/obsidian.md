@@ -1,0 +1,13 @@
+# Obsidian es la base de conocimiento
+*Norma del owner, 2026-10-01 (D4). El contrato del vault es la nota `Claude` y manda sobre esta norma.*
+
+- **El vault no es documentación de este proyecto.** Estado, decisiones, hallazgos, bitácora y plan viven aquí. En el vault habrá **una sola** nota de proyecto, `MHL MediaManagement` (`#proyecto #archivo`), estilo readme: qué es, dónde vive la documentación, y los conceptos en los que se apoya con una línea de nexo. Se actualiza cuando cambia lo que es o los conceptos que usa; nunca con estado.
+- **La nota `MHL MediaManagement` aún no existe; crearla es decisión pendiente del owner.** Hasta que la cree o lo autorice, no se crea.
+- El área del proyecto es `#archivo`; su mapa es la nota `Archivo`. Al empezar una sesión con contenido de dominio se leen `Inicio`, `Archivo` y (cuando exista) `MHL MediaManagement`, y las notas de concepto que la tarea toque (lista en `CLAUDE.md`).
+- Se **referencian notas por título** en docs, issues, commits y comentarios de código: «ver la nota `Historial ASC MHL anidado`». Las notas de concepto son la fuente; el repo no las copia, las cita.
+- **Investigar obliga a documentar, y es condición de cierre de sesión**: todo concepto nuevo que una investigación o un hallazgo `Hn` haya usado o descubierto se escribe como nota `#concepto #archivo` (o se amplía la existente) **antes de cerrar la sesión**, se añade al mapa `Archivo` y, si el proyecto se apoya en él, a `MHL MediaManagement`. Ante la duda de si es concepto, sistema o proyecto, qué nombre o qué área, se pregunta al owner.
+- Formato de una nota de concepto: definición en una frase + «Relacionado: [[…]]» · **Definición** · **Propiedades** (opcional) · **Fórmulas o medida** (opcional) · **Limitaciones** · **Fuentes**. Prohibido dentro: identificadores `Dn`/`Hn`, rutas del repo, cifras atribuidas al proyecto, «el script hace…». Verificar antes de escribir lo que se pueda verificar; lo que venga de memoria se marca como tal.
+- **No se borra ni se funde una nota sin permiso.** Crear y ampliar notas de concepto del área, sí, porque es parte del trabajo.
+- Mecánica del MCP (id `my-vault`, vault plano, nota `X` en `X.md`): no lista directorios (buscar con `obsidian_search_vault`, modo `filename` o `both`); **máximo 3–6 lecturas por lote** (un lote de 16 tumbó el servidor el 2026-09-09); editar solo con el `etag` de una lectura fresca; la edición reemplaza la nota entera. Si el servidor se cae, parar y avisar al owner.
+
+**Por qué:** los conceptos de ASC MHL (historial anidado, hashes, verificación) ya están en el vault por MHL Sentinel; este proyecto los reutiliza y amplía en vez de duplicarlos en `docs/`.
