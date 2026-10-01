@@ -17,7 +17,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado
 - ruff sin `ignore`: corregidos `F401` (`shlex`) y `F841` (`fd`) (cierra D8).
 
 ### Decidido
-- D9 confirmada por el owner; D11 (tarjeta parcial: clips + `ascmhl/` del DIT tal cual + aviso; casilla «Tarjeta completa»); D12 (ASC MHL gana sobre un `.mhl` legacy más cercano); D13 (roadmap: v0.3.0 inglés, v0.4.0 clips de varios ficheros, v0.5.0 varios destinos); D14 (varios destinos: una lectura, N escrituras).
+- D9 confirmada por el owner; D11 (tarjeta parcial: clips + `ascmhl/` del DIT tal cual + aviso; casilla «Tarjeta completa»); D12 (ASC MHL gana sobre un `.mhl` legacy más cercano); D13 (roadmap: v0.3.0 inglés, v0.4.0 clips de varios ficheros, v0.5.0 varios destinos); D14 (varios destinos: una lectura, N escrituras); D15 (nunca en `main`: ramas, PR obligatorio con CI verde, `main` protegida en GitHub).
 
 ### Añadido (v0.1.0)
 - Primera versión del script (`mhl_pull.py`, en Resolve «MHL Pull»):

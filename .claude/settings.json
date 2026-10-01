@@ -52,6 +52,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // empty' | { read -r c; case \"$c\" in *'git commit'*|*'git merge'*|*'git rebase'*|*'git cherry-pick'*) ;; *) exit 0;; esac; root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0; br=$(git -C \"$root\" rev-parse --abbrev-ref HEAD 2>/dev/null); [ \"$br\" = main ] || exit 0; jq -n '{hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"deny\",permissionDecisionReason:\"Estás en main. Norma .claude/rules/git.md (D15): crea una rama (git checkout -b feat/<issue>-slug) y entra por PR.\"}}'; }",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   },
   "permissions": {

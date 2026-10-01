@@ -10,7 +10,7 @@ CLAUDE.md              este router
 mhl_mediamanagement.py el script entero (GUI + worker + CLI); en Resolve, Workspace › Scripts › «MHL MediaManagement»
 install.sh             copia o enlaza el script en Scripts/Utility de Resolve e instala ascmhl
 .claude/rules/         normas (una por archivo)        .claude/skills/   release · obsidian-vault
-.claude/settings.json  hooks: pull + issues al arrancar · bloqueo de rutas al escribir · push al cerrar
+.claude/settings.json  hooks: pull + issues al arrancar · bloqueo de rutas al escribir · bloqueo de commit en main · push al cerrar
 docs/decisiones.md     ADRs D1–Dn                      docs/bitacora/    una entrada por sesión (00-arranque, 01-renombrado-y-debug)
 docs/arquitectura.md   cómo está hecho el script; hallazgos H1–H9
 docs/contexto-estudio.md  qué exige el estudio, en genérico   docs/roadmap.md  versiones previstas
@@ -30,7 +30,7 @@ Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
 | `decisiones-y-bitacora.md` | ADR por decisión, bitácora por sesión, `Hn` citados desde el código, `CLAUDE.md` y `CHANGELOG` al día |
 | `prediccion-antes-de-medir.md` | Predicción escrita antes de cada medida sobre SMB (escaneo, copia, hash) |
 | `subagentes.md` | Orquestar y delegar; Opus para research/diseño/revisión, Sonnet para implementación, Haiku para inventarios |
-| `git.md` | Conventional Commits, SemVer desde `v0.1.0`, Keep a Changelog, sin trailers de atribución (D7) |
+| `git.md` | Nunca en `main`: rama + PR + CI verde, `main` protegida (D15); Conventional Commits, SemVer, Keep a Changelog, sin trailers (D7) |
 | `pull-y-push.md` | Pull al abrir, push al cerrar; qué hacer si `main` divergió |
 | `issues-abiertos.md` | Leer `gh issue list` antes de cualquier tarea |
 | `problemas-al-issue.md` | Lo que se encuentra y no se arregla, a issue (sin datos del estudio) |
@@ -48,7 +48,7 @@ Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
 ## Docs
 | Archivo | Leer cuando… |
 |---|---|
-| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D14; pendientes del owner al final) |
+| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D15; pendientes del owner al final) |
 | `docs/arquitectura.md` | Vas a tocar cualquier función del script, el worker, el estado o los hashes; hallazgos H1–H9 |
 | `docs/contexto-estudio.md` | Necesitas saber qué exige el estudio del media management y del MHL |
 | `docs/roadmap.md` | Dudas de qué entra en cada versión |
