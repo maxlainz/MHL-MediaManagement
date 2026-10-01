@@ -18,6 +18,8 @@ Cámara = fichero dentro de una tarjeta con MHL de origen (ascmhl/ o .mhl en alg
 
 Sin GUI:
   python3 "MHL MediaManagement.py" --files lista.txt --dest /Volumes/X [--all] [--full-cards] [--dry-run]
+  python3 "MHL MediaManagement.py" --diag                  (diagnóstico del entorno)
+  python3 "MHL MediaManagement.py" --selftest [--keep]     (autotest: trabajo real sobre una tarjeta sintética)
   python3 "MHL MediaManagement.py" --worker job.json      (lo usa la GUI)
 
 Requisitos: Python ≥ 3.11 con ascmhl 1.2: pip3 install 'ascmhl==1.2' (trae xxhash). Ver install.sh.
@@ -25,11 +27,13 @@ Requisitos: Python ≥ 3.11 con ascmhl 1.2: pip3 install 'ascmhl==1.2' (trae xxh
 import datetime
 import hashlib
 import json
+import locale
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -49,6 +53,7 @@ SHELLS = {"sh", "bash", "zsh", "dash"}
 TRAMPOLINE_RE = re.compile(r"""^'''exec'\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
 HEARTBEAT_S = 5   # el worker escribe su estado al menos cada 5 s aunque nada cambie
 STALE_S = 60      # un estado «running» sin escribir en 60 s es de un worker muerto
+SELFTEST_PAUSE_S = 2  # el worker del autotest espera 2 s en «running» para poder comprobar el reenganche
 
 
 # ======================================================================
@@ -444,7 +449,7 @@ class Status:
         self.beating = False
         self.d = {"pid": os.getpid(), "state": "running", "phase": "", "n": 0, "total": 0,
                   "bytes": 0, "bytes_total": 0, "speed": 0, "file": "", "fails": 0, "msg": "",
-                  "started": time.time()}
+                  "started": time.time(), "version": __version__}
         self.t = 0
         self.set(force=True)
 
@@ -598,6 +603,12 @@ def worker(job_path, status_path=None):
     def log(s=""):
         print(s, flush=True); logf.write(s + "\n"); logf.flush()
 
+    try:
+        import importlib.metadata
+        ver = importlib.metadata.version("ascmhl")
+    except Exception:
+        ver = "?"
+    log(f"Worker: {sys.executable} · Python {sys.version.split()[0]} · ascmhl {ver}")
     try:  # antes de copiar nada: sin ascmhl/xxhash el trabajo fallaría a mitad, con todo ya copiado
         for mod in ("ascmhl", "xxhash"):
             __import__(mod)
@@ -709,6 +720,9 @@ def _work(job, dest, dry, log, st):
         log(f"Tarjetas: {cards_txt}" + ("   [Tarjeta completa]" if job.get("full_cards") else ""))
     log("")
 
+    if job.get("pause"):  # solo el autotest: tiempo en «running» para comprobar el reenganche
+        st.set(force=True, phase="Autotest (pausa)")
+        time.sleep(min(float(job["pause"]), 10))
     prog = {"bytes": 0, "t0": time.time()}
 
     def on_bytes(k):
@@ -954,8 +968,7 @@ def launch_worker(job):
         ep = WORK_DIR / f"stderr_{stamp}.txt"
         job["log"] = str(LOG_DIR / f"mhl_mediamanagement_{stamp}.log")
         jp.write_text(json.dumps(job, indent=1))
-        me = globals().get("__file__")
-        script = me if me and os.path.exists(me) else str(INSTALL_PATH)
+        script = worker_script()
         with open(ep, "w") as err:  # el hijo hereda su copia; la del padre se cierra al salir del with
             p = subprocess.Popen([py, script, "--worker", str(jp), "--status", str(sp)],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
@@ -1051,13 +1064,288 @@ def find_running_job():
     return None
 
 
+# ======================================================================
+# Diagnóstico, log de la ventana y autotest (issue #7) — solo stdlib
+# ======================================================================
+
+class GuiLog:
+    """Log de eventos de la ventana, LOG_DIR/gui_<stamp>.log (una línea con hora por evento). Nunca lanza: ante
+    cualquier error de escritura se desactiva en silencio (la ventana no puede romperse por su propio log)."""
+
+    def __init__(self, path=None):
+        self.on = True
+        try:
+            self.path = Path(path) if path else LOG_DIR / f"gui_{time.strftime('%Y%m%d_%H%M%S')}.log"
+        except Exception:
+            self.path, self.on = None, False
+
+    def __call__(self, msg):
+        if not self.on:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            t = time.time()
+            with open(self.path, "a", encoding="utf-8") as fh:
+                fh.write(f"{time.strftime('%H:%M:%S', time.localtime(t))}.{int(t % 1 * 1000):03d} {msg}\n")
+        except Exception:
+            self.on = False
+
+
+class TickCounter:
+    """Cuenta los disparos del temporizador por nombre de evento y anota en el log los 5 primeros de cada uno y
+    después uno de cada 20 (con el número y los segundos desde que se abrió la ventana). Barato: un += y poco más."""
+
+    def __init__(self, log, t0=None):
+        self.log, self.t0, self.n = log, t0 or time.time(), {}
+
+    def tick(self, name):
+        k = self.n[name] = self.n.get(name, 0) + 1
+        if k <= 5 or k % 20 == 0:
+            self.log(f"timer {name}: tick {k} · {time.time() - self.t0:.1f} s")
+
+
+def _ok(cond, key, val):
+    return f"{'✓' if cond else '✗'} {key}: {val}"
+
+
+def worker_script():
+    """El fichero que launch_worker pasará al worker: __file__ si existe; si no, INSTALL_PATH."""
+    me = globals().get("__file__")
+    return me if me and os.path.exists(me) else str(INSTALL_PATH)
+
+
+def diagnostics(resolve=None, fu=None, ui=None, ticks=None, home=None):
+    """Líneas «clave: valor» del entorno en el que corre el script; ✓ bien, ✗ problema, sin marca = dato.
+    Función pura (sin Resolve también): la usan --diag y el botón «Diagnóstico»."""
+    out = [f"versión: MHL MediaManagement {__version__}"]
+
+    def sec(fn):
+        try:
+            fn()
+        except Exception as e:
+            out.append(f"✗ diagnóstico interno: {type(e).__name__}: {e}")
+
+    def script():
+        me = globals().get("__file__")
+        out.append(_ok(bool(me and os.path.exists(me)), "__file__", repr(me)))
+        out.append(f"INSTALL_PATH: {INSTALL_PATH} (existe: {'sí' if INSTALL_PATH.exists() else 'no'})")
+        ws = worker_script()
+        out.append(_ok(os.path.exists(ws), "script del worker", ws))
+
+    def env():
+        out.append(f"sys.version: {sys.version.splitlines()[0]}")
+        out.append(f"sys.executable: {sys.executable}")
+        out.append(f"PATH: {os.environ.get('PATH')}")
+        for k in ("PYTHONHOME", "PYTHONPATH"):
+            v = os.environ.get(k)
+            out.append(f"{k}: {v!r}" + ("  (lo hereda el worker)" if v else ""))
+        out.append(f"TMPDIR: {os.environ.get('TMPDIR')!r} · tempfile: {tempfile.gettempdir()}")
+        out.append(f"codificación: fs {sys.getfilesystemencoding()} · preferida {locale.getpreferredencoding(False)}")
+
+    def ascmhl():
+        out.append(f"which ascmhl: {shutil.which('ascmhl')!r}")
+        for c in ascmhl_candidates(home):
+            out.append(f"candidato: {c} (existe: {'sí' if os.path.exists(c) else 'no'})")
+        exe = find_ascmhl(home)
+        out.append(_ok(bool(exe), "find_ascmhl", exe))
+        if not exe:
+            return
+        py = python_for(exe) or shutil.which("python3")
+        out.append(_ok(bool(py), "python_for", py))
+        if py:
+            why = check_worker_python(py)
+            out.append(_ok(not why, "Python del worker", why or f"importa ascmhl {ASCMHL_VERSION} y xxhash"))
+
+    def dirs():
+        for name, d in (("WORK_DIR", WORK_DIR), ("LOG_DIR", LOG_DIR)):
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=d, prefix=".diag_"):
+                    pass
+                out.append(_ok(True, name, f"{d} (existe, escribible)"))
+            except Exception as e:
+                out.append(_ok(False, name, f"{d} — {type(e).__name__}: {e}"))
+
+    def res():
+        if resolve is not None:
+            try:
+                out.append(f"Resolve: {resolve.GetVersionString()}")
+            except Exception as e:
+                out.append(_ok(False, "Resolve", f"GetVersionString: {type(e).__name__}: {e}"))
+        if ui is not None:
+            try:
+                t = ui.Timer({"ID": "DiagTimer", "Interval": 1000})
+                out.append(_ok(t is not None, "ui.Timer", repr(t)))
+            except Exception as e:
+                out.append(_ok(False, "ui.Timer", f"{type(e).__name__}: {e}"))
+        if ticks is not None:
+            out.append(f"temporizador (disparos desde que se abrió la ventana): {dict(ticks) or 'ninguno'}")
+
+    def statuses():
+        try:
+            sps = sorted(WORK_DIR.glob("status_*.json"), reverse=True)[:5]
+        except Exception:
+            sps = []
+        if not sps:
+            out.append("status recientes: ninguno")
+        for sp in sps:
+            d = read_status(sp)
+            out.append(f"status: {sp.name} · {d.get('state', '?')} · {d.get('phase', '')} · {d.get('msg', '')}"
+                       f" · pid {d.get('pid')} · versión {d.get('version', '?')}")
+
+    for fn in (script, env, ascmhl, dirs, res, statuses):
+        sec(fn)
+    return out
+
+
+def write_diag(lines):
+    """Guarda el diagnóstico en LOG_DIR/diagnostico_<stamp>.txt → (ruta, None) o (None, error)."""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        p = LOG_DIR / f"diagnostico_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return p, None
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _say(ctx, s):
+    ctx["lines"].append(s)
+    try:
+        ctx["log"](s)
+    except Exception:
+        pass
+
+
+def selftest_start(log=print, pause=SELFTEST_PAUSE_S):
+    """Autotest, parte 1: en un temporal (bajo TMPDIR) crea la tarjeta sintética A001 (3 ficheros, ASC MHL con
+    `ascmhl create -h xxh64`) y un fichero suelto, y lanza un trabajo REAL con launch_worker (todos los ficheros,
+    como --all). No bloquea: devuelve el contexto (`job` es None si no se pudo lanzar; el motivo va en `lines`)."""
+    ctx = {"lines": [], "log": log, "root": None, "job": None, "ascmhl": None, "dest": None, "reattach": None}
+    try:
+        exe = find_ascmhl()
+        if not exe:
+            _say(ctx, f"✗ ascmhl: no encontrado. {install_hint()}")
+            return ctx
+        ctx["ascmhl"] = exe
+        root = Path(tempfile.mkdtemp(prefix="mhlmm_autotest_", dir=os.environ.get("TMPDIR") or None))
+        ctx["root"] = root
+        card, loose = root / "src" / "A001", root / "src" / "sueltos" / "x.wav"
+        for i, f in enumerate([card / "CLIP" / f"A001C00{i}.mov" for i in (1, 2, 3)] + [loose], 1):
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(bytes((i * 31 + k * 7) % 256 for k in range(256)) * 256)  # 64 KB deterministas
+        r = subprocess.run([exe, "create", "-h", "xxh64", str(card)], stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, timeout=120)
+        if r.returncode:
+            _say(ctx, f"✗ ascmhl create: rc {r.returncode} · {((r.stderr or r.stdout).strip().splitlines() or [''])[-1]}")
+            return ctx
+        _say(ctx, f"✓ tarjeta sintética A001 (3 ficheros) con ASC MHL · {root}")
+        files = sorted(str(p) for p in (card / "CLIP").iterdir()) + [str(loose)]
+        plan = build_plan(scan(files, log=lambda *_: None), camera_only=False)
+        dest = root / "dest"
+        why = dest_conflict(plan, dest)
+        if why:
+            _say(ctx, f"✗ destino: {why}")
+            return ctx
+        job_d = job_from_plan(plan, dest, False, "autotest")
+        job_d["pause"] = pause
+        job, err = launch_worker(job_d)
+        if err:
+            _say(ctx, f"✗ launch_worker: {err}")
+            return ctx
+        ctx.update(job=job, dest=dest)
+        _say(ctx, f"✓ worker lanzado: pid {job['pid']} · status {job['status']} · log {job['log']}")
+    except Exception as e:
+        _say(ctx, f"✗ autotest: {type(e).__name__}: {e}")
+    return ctx
+
+
+def selftest_reattach(ctx):
+    """Autotest, reenganche: con el worker en marcha, find_running_job() debe devolver ese mismo PID."""
+    pid = ctx["job"]["pid"]
+    found = find_running_job()
+    ctx["reattach"] = bool(found and found["pid"] == pid and found["status"] == ctx["job"]["status"])
+    _say(ctx, f"✓ reenganche: ok (find_running_job → pid {pid})" if ctx["reattach"] else
+         f"✗ reenganche: find_running_job → {found and found['pid']} (esperado pid {pid})")
+
+
+def selftest_finish(ctx, state, msg, keep=False):
+    """Autotest, parte 2: resultado del trabajo, `ascmhl-debug verify DEST` (el de al lado del ascmhl encontrado) y
+    limpieza del temporal salvo keep → (ok, líneas)."""
+    rc = None
+    if ctx["job"]:
+        _say(ctx, _ok(state == "done", "trabajo", f"{state} — {msg}"))
+    if state == "done" and ctx["dest"]:
+        dbg = Path(ctx["ascmhl"]).with_name("ascmhl-debug")
+        if not dbg.exists():
+            _say(ctx, f"✗ ascmhl-debug: no está junto a {ctx['ascmhl']}")
+        else:
+            try:
+                r = subprocess.run([str(dbg), "verify", str(ctx["dest"])], stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=120)
+                rc = r.returncode
+                _say(ctx, _ok(rc == 0, "ascmhl-debug verify DEST", f"rc {rc}"))
+                if rc:
+                    for line in (r.stdout + r.stderr).strip().splitlines()[-10:]:
+                        _say(ctx, f"    {line}")
+            except Exception as e:
+                _say(ctx, f"✗ ascmhl-debug verify: {type(e).__name__}: {e}")
+    if ctx["reattach"] is None and ctx["job"]:
+        _say(ctx, "reenganche: no comprobado (el trabajo terminó antes de verlo en marcha)")
+    ok = state == "done" and rc == 0 and ctx["reattach"] is not False
+    if ctx["root"]:
+        if keep:
+            _say(ctx, f"temporal conservado (--keep): {ctx['root']}")
+        else:
+            shutil.rmtree(ctx["root"], ignore_errors=True)
+    _say(ctx, "✓ AUTOTEST OK" if ok else "✗ AUTOTEST FALLIDO")
+    return ok, ctx["lines"]
+
+
+def selftest(log=print, keep=False, timeout=120, pause=SELFTEST_PAUSE_S):
+    """Autotest completo y bloqueante (CLI --selftest): selftest_start, espera con job_outcome (comprobando el
+    reenganche mientras está en marcha) y selftest_finish → (ok, líneas)."""
+    ctx = selftest_start(log, pause)
+    job = ctx["job"]
+    if not job:
+        return selftest_finish(ctx, "failed", "no se pudo lanzar", keep)
+    t0 = time.time()
+    while True:
+        d = read_status(job["status"])
+        if ctx["reattach"] is None and d.get("state") == "running":
+            selftest_reattach(ctx)
+        state, msg, extra = job_outcome(d, job["proc"].poll() is not None, job["status"], job.get("stderr"))
+        if state != "running":
+            break
+        if time.time() - t0 > timeout:
+            job["proc"].kill()
+            job["proc"].wait()
+            state, msg, extra = "failed", f"sin terminar en {timeout} s", ""
+            break
+        time.sleep(0.2)
+    if ctx["reattach"] is None:
+        _say(ctx, "✗ reenganche: el estado nunca se vio «running»")
+        ctx["reattach"] = False
+    if extra:
+        _say(ctx, extra)
+    return selftest_finish(ctx, state, msg, keep)
+
+
 def gui(resolve, bmd):
     fu = resolve.Fusion()
     ui = fu.UIManager
     disp = bmd.UIDispatcher(ui)
     project = resolve.GetProjectManager().GetCurrentProject()
     proj_name = project.GetName()
-    state = {"plan": None, "scanned": None, "label": "", "skipped": 0, "job": None, "log_size": -1}
+    state = {"plan": None, "scanned": None, "label": "", "skipped": 0, "job": None, "log_size": -1, "selftest": None}
+    glog = GuiLog()  # issue #7: qué pasa dentro de Resolve (botones, valores de la API, temporizador)
+    ticks = TickCounter(glog)
+    try:
+        n_tl = int(project.GetTimelineCount())
+    except Exception:
+        n_tl = "?"
+    glog(f"ventana abierta · MHL MediaManagement {__version__} · proyecto {proj_name!r} · {n_tl} timelines"
+         f" · __file__ {globals().get('__file__')!r} · Python {sys.version.split()[0]} ({sys.executable})")
 
     win = disp.AddWindow(
         {"ID": "MHLMM", "WindowTitle": f"MHL MediaManagement {__version__} — media management con MHL", "Geometry": [200, 100, 900, 760]},
@@ -1090,6 +1378,8 @@ def gui(resolve, bmd):
                 ui.Label({"ID": "Status", "Text": ""}),
                 ui.Button({"ID": "Run", "Text": "4 · Copiar y verificar", "Weight": 0, "Enabled": False}),
                 ui.Button({"ID": "Refresh", "Text": "Actualizar", "Weight": 0}),
+                ui.Button({"ID": "Diag", "Text": "Diagnóstico", "Weight": 0}),
+                ui.Button({"ID": "Selftest", "Text": "Autotest", "Weight": 0}),
                 ui.Button({"ID": "Cancel", "Text": "Cancelar", "Weight": 0, "Enabled": False}),
                 ui.Button({"ID": "Close", "Text": "Cerrar", "Weight": 0}),
             ]),
@@ -1131,7 +1421,7 @@ def gui(resolve, bmd):
         itm["Run"].Enabled = bool(plan["items"])
 
     def set_running(running):
-        for k in ("Prepare", "Browse", "Dest", "Sub", "CamOnly", "FullCards", "DryRun", "TL"):
+        for k in ("Prepare", "Browse", "Dest", "Sub", "CamOnly", "FullCards", "DryRun", "TL", "Selftest"):
             itm[k].Enabled = not running
         itm["Run"].Enabled = (not running) and bool(state["plan"] and state["plan"]["items"])
         itm["Cancel"].Enabled = running
@@ -1139,6 +1429,7 @@ def gui(resolve, bmd):
     def prepare(ev=None):
         sel = tree.SelectedItems() or {}
         idxs = sorted(int(i.Text[1]) for i in sel.values())
+        glog(f"Preparar · SelectedItems {type(sel).__name__} · timelines {idxs}")
         if not idxs:
             itm["Info"].Text = "Selecciona al menos un timeline."; return
         itm["Info"].Text = "Leyendo timelines y disco…"
@@ -1154,6 +1445,9 @@ def gui(resolve, bmd):
         state["label"] = ", ".join(names) if len(names) <= 3 else f"{len(names)} timelines"
         state["skipped"] = skipped
         state["plan"] = build_plan(state["scanned"], itm["CamOnly"].Checked, itm["FullCards"].Checked)
+        pl = state["plan"]
+        glog(f"Preparar → {len(paths)} rutas, {len(pl['items'])} ficheros, {len(pl['excluded'])} excluidos,"
+             f" {len(pl['missing'])} no encontrados, {len(pl['cards'])} tarjetas · {time.time() - t0:.2f} s")
         itm["Progress"].Text = ""
         render()
 
@@ -1164,6 +1458,7 @@ def gui(resolve, bmd):
 
     def browse(ev):
         d = fu.RequestDir(itm["Dest"].Text or "/Volumes/")
+        glog(f"Elegir… → RequestDir devolvió {d!r}")
         if d:
             itm["Dest"].Text = str(d)
             render()
@@ -1211,13 +1506,24 @@ def gui(resolve, bmd):
             proc_done = job["proc"].poll() is not None
         else:  # reenganchado: no es hijo nuestro; vivo = PID con nuestro --status y estado escrito hace poco
             proc_done = not is_our_worker(job["pid"], job["status"]) or is_stale(d)
+        ctx = state["selftest"]
+        if ctx and ctx["reattach"] is None and d.get("state") == "running":
+            selftest_reattach(ctx)
         st_, msg, extra = job_outcome(d, proc_done, job["status"], job.get("stderr"))
         if st_ != "running":
+            glog(f"trabajo terminado: {st_} — {msg} · pid {job.get('pid')} · {job['status']}")
             color = {"done": "#5c5", "failed": "#e66", "cancelled": "#ea5"}.get(st_, "#ccc")
             itm["Status"].Text = f"<font color='{color}'><b>{msg}</b></font>"
             if extra:
                 itm["Preview"].PlainText = (itm["Preview"].PlainText or "") + \
                     "\n\n--- stderr del worker (últimas 20 líneas) ---\n" + extra
+            if ctx:
+                state["selftest"] = None
+                ok, lines = selftest_finish(ctx, st_, msg)
+                itm["Status"].Text = ("<font color='#5c5'><b>Autotest OK</b></font>" if ok else
+                                      "<font color='#e66'><b>Autotest FALLIDO</b></font>")
+                itm["Preview"].PlainText = ((itm["Preview"].PlainText or "") + "\n\n--- Autotest ---\n"
+                                            + "\n".join(lines))
             state["job"] = None
             if timer:
                 timer.Stop()
@@ -1234,8 +1540,11 @@ def gui(resolve, bmd):
         why = dest_conflict(plan, d)
         if why:
             itm["Status"].Text = why; return
+        glog(f"Copiar y verificar · destino {d} · simulación {itm['DryRun'].Checked!r}")
         d.mkdir(parents=True, exist_ok=True)
         job, err = launch_worker(job_from_plan(plan, d, itm["DryRun"].Checked, state["label"]))
+        glog(f"launch_worker → error: {err}" if err else
+             f"launch_worker → pid {job['pid']} · status {job['status']} · log {job['log']}")
         if err:
             itm["Status"].Text = err; return
         state["job"], state["log_size"] = job, -1
@@ -1248,6 +1557,7 @@ def gui(resolve, bmd):
 
     def cancel(ev):
         job = state["job"]
+        glog(f"Cancelar · trabajo {job and job.get('pid')}")
         if not job:
             return
         pid = job.get("pid")
@@ -1259,26 +1569,84 @@ def gui(resolve, bmd):
             except OSError:
                 pass
 
-    win.On.MHLMM.Close = lambda ev: disp.ExitLoop()
-    win.On.Close.Clicked = lambda ev: disp.ExitLoop()
+    def refresh(ev):
+        glog("Actualizar")
+        poll(ev)
+
+    def diag(ev):
+        glog("Diagnóstico")
+        lines = diagnostics(resolve, fu, ui, ticks=ticks.n)
+        lines.append(f"temporizador: {time.time() - ticks.t0:.0f} s con la ventana abierta")
+        path, err = write_diag(lines)
+        itm["Preview"].PlainText = "\n".join(lines) + (f"\n\nGuardado en {path}" if path else
+                                                       f"\n\n✗ No se pudo guardar: {err}")
+        itm["Status"].Text = f"Diagnóstico guardado en {path}" if path else "Diagnóstico (sin guardar)"
+        glog(f"Diagnóstico → {path or err}")
+
+    def selftest_gui(ev):
+        glog("Autotest")
+        if state["job"]:
+            itm["Status"].Text = "Hay un trabajo en marcha: espera a que termine."; return
+        itm["Status"].Text = "Autotest: preparando…"
+        ctx = selftest_start(log=glog)
+        itm["Preview"].PlainText = "\n".join(ctx["lines"])
+        if not ctx["job"]:
+            ok, lines = selftest_finish(ctx, "failed", "no se pudo lanzar")
+            itm["Preview"].PlainText = "\n".join(lines)
+            itm["Status"].Text = "<font color='#e66'><b>Autotest FALLIDO</b></font>"
+            return
+        state["job"], state["log_size"], state["selftest"] = ctx["job"], -1, ctx
+        set_running(True)
+        if timer:
+            timer.Start()
+            itm["Status"].Text = "Autotest en marcha…"
+        else:
+            itm["Status"].Text = "Autotest en marcha… pulsa Actualizar para ver el progreso"
+
+    def close(ev):
+        glog("Cerrar")
+        disp.ExitLoop()
+
+    def logged(kind, cid, fn):
+        def h(ev):
+            w = itm[cid]
+            glog(f"{kind} {cid} → {w.Checked if kind == 'CheckBox.Clicked' else w.Text!r}")
+            fn(ev)
+        return h
+
+    # Temporizador: según la versión el evento llega como disp.On.Timeout (genérico) o disp.On.<ID>.Timeout. Se
+    # registran los dos con envoltorios distintos para saber por el log cuál dispara (y si lo hacen los dos).
+    def poll_generic(ev=None):
+        ticks.tick("disp.On.Timeout")
+        poll(ev)
+
+    def poll_named(ev=None):
+        ticks.tick("disp.On.Poll.Timeout")
+        poll(ev)
+
+    win.On.MHLMM.Close = close
+    win.On.Close.Clicked = close
     win.On.Browse.Clicked = browse
     win.On.Prepare.Clicked = prepare
-    win.On.CamOnly.Clicked = toggle
-    win.On.FullCards.Clicked = toggle
-    win.On.Sub.Clicked = lambda ev: render()
+    win.On.CamOnly.Clicked = logged("CheckBox.Clicked", "CamOnly", toggle)
+    win.On.FullCards.Clicked = logged("CheckBox.Clicked", "FullCards", toggle)
+    win.On.Sub.Clicked = logged("CheckBox.Clicked", "Sub", lambda ev: render())
+    win.On.DryRun.Clicked = logged("CheckBox.Clicked", "DryRun", lambda ev: None)
     win.On.Run.Clicked = run
     win.On.Cancel.Clicked = cancel
-    win.On.Refresh.Clicked = poll
-    win.On.Dest.EditingFinished = lambda ev: render()
-    # El evento del timer se registra en el dispatcher; según la versión llega como
-    # disp.On.Timeout (genérico) o disp.On.<ID>.Timeout. Se registran los dos.
-    disp.On.Timeout = poll
+    win.On.Refresh.Clicked = refresh
+    win.On.Diag.Clicked = diag
+    win.On.Selftest.Clicked = selftest_gui
+    win.On.Dest.EditingFinished = logged("LineEdit.EditingFinished", "Dest", lambda ev: render())
+    disp.On.Timeout = poll_generic
     try:
-        disp.On.Poll.Timeout = poll
-    except Exception:
-        pass
+        disp.On.Poll.Timeout = poll_named
+    except Exception as e:
+        glog(f"disp.On.Poll.Timeout no se puede registrar: {type(e).__name__}: {e}")
+    glog(f"ui.Timer: {'creado' if timer else 'no disponible (solo Actualizar)'}")
 
     running = find_running_job()
+    glog(f"reenganche: pid {running['pid']} · {running['status']}" if running else "reenganche: ningún trabajo en marcha")
     if running:
         state["job"] = running
         itm["Info"].Text = "Hay un trabajo en marcha de una ventana anterior: mostrando su progreso."
@@ -1290,6 +1658,8 @@ def gui(resolve, bmd):
     disp.RunLoop()
     if timer:
         timer.Stop()
+    glog(f"ventana cerrada · disparos del temporizador {ticks.n} · {time.time() - ticks.t0:.0f} s"
+         + (f" · trabajo sigue en marcha (pid {state['job'].get('pid')})" if state["job"] else ""))
     win.Hide()
     if state["job"]:
         print("MHL MediaManagement: la ventana se ha cerrado pero el trabajo sigue en segundo plano; "
@@ -1310,9 +1680,18 @@ def cli(argv):
     ap.add_argument("--all", action="store_true", help="incluir ficheros sin MHL de origen")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--full-cards", action="store_true", help="copiar cada tarjeta entera (Tarjeta completa, D11)")
+    ap.add_argument("--diag", action="store_true", help="diagnóstico del entorno (intérprete, ascmhl, carpetas)")
+    ap.add_argument("--selftest", action="store_true", help="autotest: trabajo real sobre una tarjeta sintética")
+    ap.add_argument("--keep", action="store_true", help="con --selftest, conservar la carpeta temporal")
     a = ap.parse_args(argv)
     if a.worker:
         return worker(a.worker, a.status)
+    if a.diag:
+        print("\n".join(diagnostics()))
+        return 0
+    if a.selftest:
+        ok, _ = selftest(keep=a.keep)
+        return 0 if ok else 1
     if a.files and a.dest:
         paths = [l.strip() for l in a.files.read_text().splitlines() if l.strip()]
         plan = build_plan(scan(paths, log=lambda *_: None), camera_only=not a.all, full_cards=a.full_cards)

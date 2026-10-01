@@ -36,6 +36,18 @@ python3 mhl_mediamanagement.py --files lista.txt --dest /Volumes/X [--all] [--fu
 
 `lista.txt`: una ruta por línea (acepta secuencias `clip.[0086400-0086500].exr`). `--all` incluye ficheros sin MHL de origen. `--full-cards` es «Tarjeta completa»: copia cada tarjeta entera.
 
+## Diagnóstico y autotest
+
+Para la primera prueba dentro de Resolve, y siempre que algo no cuadre:
+
+- **Diagnóstico** — muestra en la ventana con qué Python corre el script, dónde ha encontrado `ascmhl` (y si su Python vale), si las carpetas de estado y logs se pueden escribir, la versión de Resolve, si el temporizador funciona y los últimos trabajos. Lo guarda en `~/Library/Logs/mhl_mediamanagement/diagnostico_<fecha>.txt`.
+- **Autotest** — crea en una carpeta temporal una tarjeta de prueba `A001` con su ASC MHL y un fichero suelto, y la copia con un trabajo real (el mismo camino que «Copiar y verificar»), con progreso en la ventana. Al terminar comprueba el destino con `ascmhl-debug verify` y dice «Autotest OK» o «Autotest FALLIDO». No toca nada fuera de la carpeta temporal, que se borra al acabar.
+- Cada vez que se abre la ventana se escribe `~/Library/Logs/mhl_mediamanagement/gui_<fecha>.log` con lo que pasa dentro (botones, carpetas elegidas, temporizador, resultado de cada trabajo). Es lo que hay que mandar si algo falla.
+
+**Primera prueba recomendada:** Diagnóstico → Autotest → un trabajo real pequeño → cerrar la ventana y volver a abrirla (con un trabajo en marcha, debe reengancharse y seguir mostrando el progreso).
+
+Sin Resolve: `python3 mhl_mediamanagement.py --diag` y `python3 mhl_mediamanagement.py --selftest [--keep]` (`--keep` conserva la carpeta temporal).
+
 ## Desarrollo
 `make setup` (dependencias en `.venv` con `uv`) · `make ci` (leak-check + ruff + prueba de humo del modo CLI sobre fixtures sintéticos; es lo mismo que corre GitHub Actions) · `make install-link` (enlace del script en Resolve). La GUI solo se puede probar dentro de Resolve. Cómo está hecho: `docs/arquitectura.md`; decisiones: `docs/decisiones.md`.
 
