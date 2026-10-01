@@ -19,7 +19,7 @@ Sin GUI:
   python3 "MHL MediaManagement.py" --files lista.txt --dest /Volumes/X [--all] [--dry-run]
   python3 "MHL MediaManagement.py" --worker job.json      (lo usa la GUI)
 
-Requisitos: `pip3 install ascmhl` (trae xxhash). Ver install.sh.
+Requisitos: Python ≥ 3.11 con ascmhl 1.2: pip3 install 'ascmhl==1.2' (trae xxhash). Ver install.sh.
 """
 import datetime
 import hashlib
@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -40,9 +41,13 @@ WORK_DIR = Path.home() / "Library/Application Support/mhl_mediamanagement"
 LOG_DIR = Path.home() / "Library/Logs/mhl_mediamanagement"
 ROOT_HASH = "xxh64"
 SEQ_RE = re.compile(r"\[(\d+)-(\d+)\]")
-ASCMHL_CANDIDATES = ["/opt/homebrew/bin/ascmhl", "/usr/local/bin/ascmhl"] + sorted(
-    [str(p) for p in Path.home().glob("Library/Python/*/bin/ascmhl")]
-    + [str(p) for p in Path("/Library/Frameworks/Python.framework/Versions").glob("*/bin/ascmhl")], reverse=True)
+ASCMHL_VERSION = "1.2"  # D6: la misma que fija pyproject.toml (lo comprueba tests/test_version.py)
+FRAMEWORKS = Path("/Library/Frameworks/Python.framework/Versions")  # Python de python.org
+HOMEBREW_ASCMHL = ["/opt/homebrew/bin/ascmhl", "/usr/local/bin/ascmhl"]
+SHELLS = {"sh", "bash", "zsh", "dash"}
+TRAMPOLINE_RE = re.compile(r"""^'''exec'\s+(?:"([^"]+)"|'([^']+)'|(\S+))""")
+HEARTBEAT_S = 5   # el worker escribe su estado al menos cada 5 s aunque nada cambie
+STALE_S = 60      # un estado «running» sin escribir en 60 s es de un worker muerto
 
 
 # ======================================================================
@@ -264,28 +269,56 @@ def job_from_plan(plan, dest, dry_run, label=""):
     }
 
 
-def find_ascmhl():
+def _py_version(p):
+    """(3, 13) de …/3.13/bin/ascmhl; (0, 0) si la ruta no lleva versión (Current)."""
+    m = re.search(r"/(\d+)\.(\d+)[^/]*/bin/ascmhl$", str(p))
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
+def ascmhl_candidates(home=None):
+    """Rutas habituales de ascmhl: Python de python.org, ~/Library/Python/*/bin y Homebrew, en ese orden; dentro de
+    cada grupo, de la versión de Python más alta a la más baja en orden numérico (3.13 antes que 3.9)."""
+    home = Path(home) if home else Path.home()
+    out = []
+    for root, pat in ((FRAMEWORKS, "*/bin/ascmhl"), (home, "Library/Python/*/bin/ascmhl")):
+        out += sorted((str(p) for p in root.glob(pat)), key=lambda s: (_py_version(s), s), reverse=True)
+    return out + HOMEBREW_ASCMHL
+
+
+def find_ascmhl(home=None):
+    """El ejecutable ascmhl: el del PATH primero (lo explícito manda), luego ascmhl_candidates. Si trae un Python que
+    no vale, lo para check_worker_python en launch_worker."""
     w = shutil.which("ascmhl")
     if w:
         return w
-    for c in ASCMHL_CANDIDATES:
+    for c in ascmhl_candidates(home):
         if os.path.exists(c):
             return c
     return None
 
 
 def python_for(ascmhl):
-    """El intérprete del propio ascmhl (tiene ascmhl y xxhash importables)."""
+    """El intérprete del propio ascmhl (el que tiene ascmhl y xxhash), leído de su shebang; None si no se deduce.
+    Entiende #!/ruta/python, #!/usr/bin/env [-S] python3 [-u] y el trampolín que escriben pip y uv cuando la ruta del
+    intérprete es larga o lleva espacios: línea 1 #!/bin/sh, línea 2 '''exec' "<python>" "$0" "$@"."""
     try:
-        first = open(ascmhl).readline().strip()
-        if first.startswith("#!"):
-            parts = first[2:].split()
-            if parts and parts[0].endswith("env"):
-                return shutil.which(parts[1]) or parts[1]
-            return parts[0]
+        with open(ascmhl, encoding="utf-8", errors="replace") as fh:
+            first, second = fh.readline().strip(), fh.readline().strip()
     except OSError:
-        pass
-    return shutil.which("python3") or "/usr/bin/python3"
+        return None
+    if not first.startswith("#!"):
+        return None
+    parts = first[2:].split()
+    if not parts:
+        return None
+    name = os.path.basename(parts[0])
+    if name in SHELLS:
+        m = TRAMPOLINE_RE.match(second)
+        return next((g for g in m.groups() if g), None) if m else None
+    if name == "env":
+        args = [a for a in parts[1:] if not a.startswith("-") and "=" not in a]
+        return shutil.which(args[0]) if args else None
+    return parts[0]
 
 
 def human(b):
@@ -310,6 +343,8 @@ class Status:
 
     def __init__(self, path):
         self.path = path
+        self.lock = threading.RLock()  # reentrante: el manejador de SIGTERM corre en el hilo principal
+        self.beating = False
         self.d = {"pid": os.getpid(), "state": "running", "phase": "", "n": 0, "total": 0,
                   "bytes": 0, "bytes_total": 0, "speed": 0, "file": "", "fails": 0, "msg": "",
                   "started": time.time()}
@@ -317,14 +352,30 @@ class Status:
         self.set(force=True)
 
     def set(self, force=False, **kw):
-        self.d.update(kw)
-        now = time.time()
-        if self.path and (force or now - self.t > 0.3):
-            tmp = self.path + ".tmp"
-            with open(tmp, "w") as fh:
-                json.dump(self.d, fh)
-            os.replace(tmp, self.path)
-            self.t = now
+        with self.lock:
+            self.d.update(kw)
+            now = time.time()
+            if self.path and (force or now - self.t > 0.3):
+                self.d["updated"] = now  # la GUI da por muerto un «running» sin escribir en STALE_S
+                tmp = self.path + ".tmp"
+                with open(tmp, "w") as fh:
+                    json.dump(self.d, fh)
+                os.replace(tmp, self.path)
+                self.t = now
+
+    def heartbeat(self, every=HEARTBEAT_S):
+        """Hilo que reescribe el estado cada `every` s aunque nada cambie (commit largo, fichero enorme en SMB)."""
+        def beat():
+            while self.beating:
+                time.sleep(every)
+                if self.beating:
+                    try:
+                        self.set(force=True)
+                    except OSError:
+                        pass
+        self.beating = bool(self.path)
+        if self.beating:
+            threading.Thread(target=beat, daemon=True).start()
 
 
 def hash_file(path, formats, on_bytes=None):
@@ -424,9 +475,14 @@ def make_on_term(log, st, logf):
             _CANCEL_ASKED[0] = True
             log("\n… Cancelación recibida mientras se escribe el MHL: se termina de escribir y se sale.")
             return
-        tmp = _CURRENT_TMP[0]
-        if tmp and os.path.exists(tmp):
-            os.remove(tmp)
+        tmp = _CURRENT_TMP[0]  # fichero .mhlmm_part o carpeta ascmhl.mhlmm_part a medias
+        try:
+            if tmp and os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+            elif tmp and os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
         log("\n✗ CANCELADO por el usuario. No se ha creado el MHL.")
         st.set(force=True, state="cancelled", msg="Cancelado")
         logf.close()
@@ -445,6 +501,16 @@ def worker(job_path, status_path=None):
     def log(s=""):
         print(s, flush=True); logf.write(s + "\n"); logf.flush()
 
+    try:  # antes de copiar nada: sin ascmhl/xxhash el trabajo fallaría a mitad, con todo ya copiado
+        for mod in ("ascmhl", "xxhash"):
+            __import__(mod)
+    except ImportError as e:
+        log(f"✗ El Python del worker ({sys.executable}) no puede importar ascmhl/xxhash: {e}\n"
+            f"  Instala con: pip3 install 'ascmhl=={ASCMHL_VERSION}' con Python ≥ 3.11 (ver install.sh). No se ha copiado nada.")
+        st.set(force=True, state="failed", msg="Falta ascmhl en el Python del worker (ver log)")
+        logf.close()
+        return 1
+    st.heartbeat()
     signal.signal(signal.SIGTERM, make_on_term(log, st, logf))
 
     try:
@@ -455,6 +521,7 @@ def worker(job_path, status_path=None):
         st.set(force=True, state="failed", msg="Error inesperado (ver log)")
         return 1
     finally:
+        st.beating = False
         logf.close()
 
 
@@ -493,6 +560,39 @@ def _commit(session, history, dest, job, log):
     if _CANCEL_ASKED[0]:
         log("Cancelación pedida durante la escritura: el MHL se ha terminado de escribir completo.")
     return 0, "done", ""
+
+
+def _copy_ascmhl(src, dst, log, card_rel):
+    """Copia el ascmhl/ del DIT a ascmhl.mhlmm_part y lo renombra: un corte nunca deja un ascmhl/ a medias.
+    Un ascmhl.mhlmm_part de un intento anterior se borra primero."""
+    part = dst.with_name(dst.name + ".mhlmm_part")
+    if part.exists():
+        shutil.rmtree(part)
+        log(f"Borrada copia a medias de un intento anterior: {card_rel}/{part.name}/")
+    if dst.exists():
+        return
+    _CURRENT_TMP[0] = part
+    try:
+        shutil.copytree(src, part)
+        os.replace(part, dst)
+    except BaseException:
+        shutil.rmtree(part, ignore_errors=True)
+        raise
+    finally:
+        _CURRENT_TMP[0] = None
+    log(f"MHL copiado: {card_rel}/ascmhl/")
+
+
+def _broken_ascmhl(dest, cards):
+    """Primera carpeta ascmhl/ de las tarjetas ASC del trabajo que ascmhl no puede cargar, o None (la raíz u otra)."""
+    from ascmhl.history import MHLHistory
+    for card_rel, kind in sorted(cards.values()):
+        if kind == "asc":
+            try:
+                MHLHistory.load_from_path(str(dest / card_rel))
+            except Exception:
+                return card_rel
+    return None
 
 
 def _work(job, dest, dry, log, st):
@@ -537,9 +637,8 @@ def _work(job, dest, dry, log, st):
     for card, (card_rel, kind) in sorted(cards.items()):
         dcard = dest / card_rel
         try:
-            if kind == "asc" and not (dcard / "ascmhl").exists():
-                shutil.copytree(Path(card) / "ascmhl", dcard / "ascmhl")
-                log(f"MHL copiado: {card_rel}/ascmhl/")
+            if kind == "asc":
+                _copy_ascmhl(Path(card) / "ascmhl", dcard / "ascmhl", log, card_rel)
             elif kind == "legacy":
                 for name in legacy_mhl_names(card):
                     m = Path(card) / name
@@ -557,7 +656,19 @@ def _work(job, dest, dry, log, st):
     prog["bytes"], prog["t0"] = 0, time.time()
     st.set(force=True, phase="Verificación", n=0, total=N, bytes=0, bytes_total=total_v, speed=0)
     from ascmhl.history import MHLHistory
-    history = MHLHistory.load_from_path(str(dest))
+    try:
+        history = MHLHistory.load_from_path(str(dest))
+    except Exception as e:  # p. ej. un ascmhl/ con ascmhl_chain.xml pero sin los .mhl (copia antigua a medias)
+        bad = _broken_ascmhl(dest, cards)
+        where = f"{bad}/ascmhl" if bad else "ascmhl (raíz o una tarjeta anidada)"
+        log(f"✗ El historial ASC MHL de DEST/{where} está incompleto o dañado: {type(e).__name__}: {e}")
+        if bad:
+            log(f"  Borra {dest / bad / 'ascmhl'} y relanza: se vuelve a copiar del origen.")
+        else:
+            log(f"  Revisa a mano los ascmhl/ de {dest} antes de relanzar.")
+        log("✗ NO se crea el MHL.")
+        st.set(force=True, state="failed", msg=f"✗ ASC MHL incompleto en DEST/{where} — MHL NO creado")
+        return 1
     legacy_cache, fails, records = {}, [], []
     ok_count = 0
     for n, it in enumerate(items, 1):
@@ -675,42 +786,155 @@ def _work(job, dest, dry, log, st):
 # ======================================================================
 
 def safe_name(s):
-    return re.sub(r'[/:\\]+', "_", s).strip() or "PROYECTO"
+    """Nombre de carpeta sin separadores; nunca vacío ni solo puntos («.», «..» → PROYECTO)."""
+    n = re.sub(r'[/:\\]+', "_", s or "").strip()
+    return n if n.strip(".") else "PROYECTO"
+
+
+def compute_dest(base_text, sub_checked, proj_name):
+    """Destino final a partir del texto del campo Destino: ~ expandido, ruta resuelta, + subcarpeta del proyecto si
+    toca. Una sola fuente para la vista previa y para Copiar. «/» sin subcarpeta sigue siendo «/» (decide dest_conflict)."""
+    t = (base_text or "").strip()
+    if not t:
+        return None
+    d = Path(os.path.expanduser(t)).resolve()
+    return d / safe_name(proj_name) if sub_checked else d
+
+
+def install_hint():
+    return f"Instala con: pip3 install 'ascmhl=={ASCMHL_VERSION}' con Python ≥ 3.11 (ver install.sh)."
+
+
+def check_worker_python(py):
+    """None si `py` importa ascmhl y xxhash y su ascmhl es ASCMHL_VERSION; si no, el mensaje para la ventana."""
+    code = "import ascmhl, xxhash, importlib.metadata as m; print(m.version('ascmhl'))"
+    try:
+        r = subprocess.run([py, "-c", code], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        return f"No puedo ejecutar el Python de ascmhl ({py}): {e}. {install_hint()}"
+    if r.returncode != 0:
+        why = ((r.stderr or "").strip().splitlines() or ["sin salida"])[-1]
+        return f"El Python de ascmhl ({py}) no puede importar ascmhl/xxhash: {why}. {install_hint()}"
+    found = ((r.stdout or "").strip().splitlines() or ["?"])[-1]
+    if found != ASCMHL_VERSION:
+        return f"El Python de ascmhl ({py}) tiene ascmhl {found}; hace falta {ASCMHL_VERSION}. {install_hint()}"
+    return None
 
 
 def launch_worker(job):
-    """Lanza el worker en segundo plano (sin Terminal). Devuelve (pid, status_path, log_path) o error."""
-    ascmhl = find_ascmhl()
-    if not ascmhl:
-        return None, "No encuentro ascmhl: instala con pip3 install ascmhl"
-    py = python_for(ascmhl)
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime('%Y%m%d_%H%M%S')
-    jp = WORK_DIR / f"job_{stamp}.json"
-    sp = WORK_DIR / f"status_{stamp}.json"
-    job["log"] = str(LOG_DIR / f"mhl_mediamanagement_{stamp}.log")
-    jp.write_text(json.dumps(job, indent=1))
-    me = globals().get("__file__")
-    script = me if me and os.path.exists(me) else str(INSTALL_PATH)
-    err = open(WORK_DIR / f"stderr_{stamp}.txt", "w")
-    p = subprocess.Popen([py, script, "--worker", str(jp), "--status", str(sp)],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
-                         start_new_session=True, cwd=str(WORK_DIR))
-    return {"pid": p.pid, "proc": p, "status": str(sp), "log": job["log"]}, None
+    """Lanza el worker en segundo plano (sin Terminal) → ({pid, proc, status, log, stderr}, None) o (None, mensaje).
+    Antes comprueba que el Python de ascmhl vale (check_worker_python): si no, no escribe ni lanza nada."""
+    try:
+        ascmhl = find_ascmhl()
+        if not ascmhl:
+            return None, f"No encuentro ascmhl. {install_hint()}"
+        py = python_for(ascmhl) or shutil.which("python3")
+        if not py:
+            return None, f"No sé qué Python usa {ascmhl}. {install_hint()}"
+        why = check_worker_python(py)
+        if why:
+            return None, why
+        WORK_DIR.mkdir(parents=True, exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime('%Y%m%d_%H%M%S')
+        jp = WORK_DIR / f"job_{stamp}.json"
+        sp = WORK_DIR / f"status_{stamp}.json"
+        ep = WORK_DIR / f"stderr_{stamp}.txt"
+        job["log"] = str(LOG_DIR / f"mhl_mediamanagement_{stamp}.log")
+        jp.write_text(json.dumps(job, indent=1))
+        me = globals().get("__file__")
+        script = me if me and os.path.exists(me) else str(INSTALL_PATH)
+        with open(ep, "w") as err:  # el hijo hereda su copia; la del padre se cierra al salir del with
+            p = subprocess.Popen([py, script, "--worker", str(jp), "--status", str(sp)],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                                 start_new_session=True, cwd=str(WORK_DIR))
+        return {"pid": p.pid, "proc": p, "status": str(sp), "log": job["log"], "stderr": str(ep)}, None
+    except Exception as e:
+        return None, str(e)
+
+
+def read_status(path):
+    """El status_*.json como dict; {} si no existe, está a medias o no es un objeto JSON."""
+    try:
+        d = json.loads(Path(path).read_text())
+    except Exception:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def is_our_worker(pid, status_path):
+    """El PID existe y es un worker nuestro con ese status (ps), no un proceso que ha heredado el PID."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+        cmd = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return False
+    return "--worker" in cmd and f"--status {status_path}" in cmd
+
+
+def is_stale(d, now=None):
+    """Estado sin escribir en STALE_S (el worker vivo lo reescribe cada HEARTBEAT_S)."""
+    u = d.get("updated")
+    return isinstance(u, (int, float)) and (now or time.time()) - u > STALE_S
+
+
+def tail(path, n=20):
+    try:
+        with open(path, errors="replace") as fh:
+            return "\n".join(fh.read().splitlines()[-n:])
+    except Exception:
+        return ""
+
+
+def cancel_allowed(d):
+    """Cancelar no se ofrece mientras se escribe el MHL (el worker tampoco corta ahí)."""
+    return d.get("phase") != "MHL"
+
+
+def job_outcome(d, proc_done, status_path, stderr_path):
+    """(estado, mensaje, texto extra) del trabajo. Si el proceso acabó y el estado aún dice running, se relee una vez
+    (el worker pudo escribir el final justo después); si sigue igual, failed + las últimas 20 líneas de stderr."""
+    st_ = d.get("state", "running")
+    if st_ == "running" and proc_done:
+        d = read_status(status_path) or d
+        st_ = d.get("state", "running")
+        if st_ == "running":
+            return "failed", "El proceso terminó sin estado final (ver log)", tail(stderr_path, 20) if stderr_path else ""
+    if st_ == "running":
+        return "running", d.get("msg", ""), ""
+    return st_, d.get("msg") or st_, ""
+
+
+def _write_status(sp, d):
+    tmp = str(sp) + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh)
+    os.replace(tmp, str(sp))
 
 
 def find_running_job():
-    """Si hay un trabajo en marcha (de una ventana anterior), lo devuelve para reengancharse."""
-    for sp in sorted(WORK_DIR.glob("status_*.json"), reverse=True)[:5]:
+    """Si hay un trabajo en marcha (de una ventana anterior), lo devuelve para reengancharse. Un status «running»
+    cuyo PID ya no es un worker nuestro se reescribe como failed. Nada de aquí impide abrir la ventana."""
+    try:
+        sps = sorted(WORK_DIR.glob("status_*.json"), reverse=True)[:5]
+    except Exception:
+        return None
+    for sp in sps:
         try:
-            d = json.loads(sp.read_text())
-            if d.get("state") == "running":
-                os.kill(int(d["pid"]), 0)
-                stamp = sp.stem.replace("status_", "")
-                return {"pid": int(d["pid"]), "proc": None, "status": str(sp),
-                        "log": str(LOG_DIR / f"mhl_mediamanagement_{stamp}.log")}
-        except (OSError, ValueError, KeyError):
+            d = read_status(sp)
+            if d.get("state") != "running":
+                continue
+            stamp = sp.stem.replace("status_", "")
+            if is_our_worker(d.get("pid"), str(sp)):
+                return {"pid": d["pid"], "proc": None, "status": str(sp),
+                        "log": str(LOG_DIR / f"mhl_mediamanagement_{stamp}.log"),
+                        "stderr": str(WORK_DIR / f"stderr_{stamp}.txt")}
+            d.update(state="failed", msg="El proceso ya no existe")
+            _write_status(sp, d)
+        except Exception:
             continue
     return None
 
@@ -772,11 +996,7 @@ def gui(resolve, bmd):
             it.Selected = True
 
     def final_dest():
-        dest = itm["Dest"].Text.strip()
-        if not dest:
-            return None
-        d = Path(dest)
-        return d / safe_name(proj_name) if itm["Sub"].Checked else d
+        return compute_dest(itm["Dest"].Text, itm["Sub"].Checked, proj_name)
 
     def render():
         plan = state["plan"]
@@ -844,24 +1064,25 @@ def gui(resolve, bmd):
         job = state["job"]
         if not job:
             return
-        try:
-            d = json.loads(Path(job["status"]).read_text())
-        except (OSError, ValueError):
-            d = {}
+        d = read_status(job["status"])
         if d:
-            ph, n, tot = d.get("phase", ""), d.get("n", 0), d.get("total", 0)
-            b, bt, sp = d.get("bytes", 0), d.get("bytes_total", 0), d.get("speed", 0)
-            line = f"<b>{ph}</b>  {n}/{tot} ficheros · {human(b)}"
-            if bt:
-                pct = 100 * b / bt
-                eta = (bt - b) / sp if sp > 0 else 0
-                line += f" de {human(bt)} ({pct:.0f} %) · ETA {int(eta // 60)} min {int(eta % 60)} s"
-            line += f" · {human(sp)}/s"
-            if d.get("fails"):
-                line += f" · <font color='#e66'>fallos: {d['fails']}</font>"
-            if d.get("file"):
-                line += f"<br><small>{d['file']}</small>"
-            itm["Progress"].Text = line
+            try:
+                ph, n, tot = d.get("phase", ""), d.get("n", 0), d.get("total", 0)
+                b, bt, sp = d.get("bytes", 0), d.get("bytes_total", 0), d.get("speed", 0)
+                line = f"<b>{ph}</b>  {n}/{tot} ficheros · {human(b)}"
+                if bt:
+                    pct = 100 * b / bt
+                    eta = (bt - b) / sp if sp > 0 else 0
+                    line += f" de {human(bt)} ({pct:.0f} %) · ETA {int(eta // 60)} min {int(eta % 60)} s"
+                line += f" · {human(sp)}/s"
+                if d.get("fails"):
+                    line += f" · <font color='#e66'>fallos: {d['fails']}</font>"
+                if d.get("file"):
+                    line += f"<br><small>{d['file']}</small>"
+                itm["Progress"].Text = line
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        itm["Cancel"].Enabled = cancel_allowed(d)
         try:
             size = os.path.getsize(job["log"])
             if size != state["log_size"]:
@@ -871,13 +1092,17 @@ def gui(resolve, bmd):
                 itm["Preview"].PlainText = "\n".join(lines[-400:])
         except OSError:
             pass
-        proc_done = job["proc"] is not None and job["proc"].poll() is not None
-        st_ = d.get("state", "running")
-        if st_ != "running" or proc_done:
-            if st_ == "running":  # el proceso murió sin escribir estado final
-                st_, d["msg"] = "failed", "El proceso terminó sin estado final (ver log)"
+        if job["proc"] is not None:
+            proc_done = job["proc"].poll() is not None
+        else:  # reenganchado: no es hijo nuestro; vivo = PID con nuestro --status y estado escrito hace poco
+            proc_done = not is_our_worker(job["pid"], job["status"]) or is_stale(d)
+        st_, msg, extra = job_outcome(d, proc_done, job["status"], job.get("stderr"))
+        if st_ != "running":
             color = {"done": "#5c5", "failed": "#e66", "cancelled": "#ea5"}.get(st_, "#ccc")
-            itm["Status"].Text = f"<font color='{color}'><b>{d.get('msg', st_)}</b></font>"
+            itm["Status"].Text = f"<font color='{color}'><b>{msg}</b></font>"
+            if extra:
+                itm["Preview"].PlainText = (itm["Preview"].PlainText or "") + \
+                    "\n\n--- stderr del worker (últimas 20 líneas) ---\n" + extra
             state["job"] = None
             if timer:
                 timer.Stop()
@@ -888,10 +1113,9 @@ def gui(resolve, bmd):
         if not plan or not plan["items"]:
             itm["Status"].Text = "Nada que copiar. Pulsa Preparar."; return
         base_dest = itm["Dest"].Text.strip()
-        if not base_dest or not os.path.isdir(base_dest):
+        if not base_dest or not os.path.isdir(os.path.expanduser(base_dest)):
             itm["Status"].Text = "Elige una carpeta de destino existente."; return
-        d = Path(base_dest).resolve() / (safe_name(proj_name) if itm["Sub"].Checked else "")
-        d = Path(str(d).rstrip("/"))
+        d = compute_dest(base_dest, itm["Sub"].Checked, proj_name)
         why = dest_conflict(plan, d)
         if why:
             itm["Status"].Text = why; return
@@ -909,9 +1133,13 @@ def gui(resolve, bmd):
 
     def cancel(ev):
         job = state["job"]
-        if job:
+        if not job:
+            return
+        pid = job.get("pid")
+        alive = job["proc"].poll() is None if job["proc"] is not None else is_our_worker(pid, job["status"])
+        if alive and isinstance(pid, int) and pid > 1:  # nunca kill(0)/kill(1) ni a un PID reciclado
             try:
-                os.kill(job["pid"], 15)
+                os.kill(pid, 15)
                 itm["Status"].Text = "Cancelando…"
             except OSError:
                 pass

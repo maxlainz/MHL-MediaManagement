@@ -1,7 +1,9 @@
 """Worker: conformidad con la referencia (hashers de ascmhl, comparación exacta, generaciones anteriores del destino),
 MHL legacy en el MHL raíz, limpieza de temporales y SIGTERM durante la escritura del MHL."""
+import builtins
 import datetime
 import hashlib
+import json
 import shutil
 import subprocess
 
@@ -131,3 +133,60 @@ def test_commit_fallido_informa_de_generaciones_huerfanas(tmp_path, mp, media):
     assert res[0] == 1 and res[1] == "failed"
     assert any("0099_huerfana.mhl" in s for s in lines)
     assert mp._COMMITTING[0] is False
+
+
+def test_worker_sin_ascmhl_no_copia_nada(tmp_path, mp, media, monkeypatch, work_dirs):
+    dest = tmp_path / "dest"
+    plan = mp.build_plan(mp.scan([str(c) for c in media["clips"]], log=lambda *_: None), True)
+    jp, sp, lp = tmp_path / "job.json", tmp_path / "status.json", tmp_path / "worker.log"
+    jp.write_text(json.dumps({**mp.job_from_plan(plan, dest, False, "t"), "log": str(lp)}))
+    real = builtins.__import__
+
+    def sin_ascmhl(name, *a, **kw):
+        if name == "ascmhl" or name.startswith("ascmhl."):
+            raise ImportError("No module named 'ascmhl' (simulado)")
+        return real(name, *a, **kw)
+    monkeypatch.setattr(builtins, "__import__", sin_ascmhl)
+    rc = mp.worker(str(jp), str(sp))
+    monkeypatch.setattr(builtins, "__import__", real)
+    assert rc == 1
+    assert not dest.exists()
+    d = json.loads(sp.read_text())
+    assert d["state"] == "failed" and "ascmhl" in d["msg"]
+    assert f"ascmhl=={mp.ASCMHL_VERSION}" in lp.read_text()
+
+
+def test_ascmhl_a_medias_de_un_intento_anterior_se_rehace(tmp_path, media, ascmhl_debug_cli):
+    dest = tmp_path / "dest"
+    part = dest / "A001" / "ascmhl.mhlmm_part"
+    part.mkdir(parents=True)
+    (part / "0001_basura.mhl").write_text("a medias")
+    r = run_pull(tmp_path, media["clips"], dest)
+    assert r.returncode == 0, out(r)
+    assert not part.exists()
+    dit = {p.name for p in (media["card"] / "ascmhl").iterdir()}
+    assert dit <= {p.name for p in (dest / "A001" / "ascmhl").iterdir()}  # el DIT entero, más la generación nueva
+    v = verify(tmp_path, ascmhl_debug_cli, dest)
+    assert v.returncode == 0, out(v)
+
+
+def test_ascmhl_incompleto_en_destino_falla_claro(tmp_path, media):
+    dest = tmp_path / "dest"
+    (dest / "A001" / "ascmhl").mkdir(parents=True)
+    shutil.copy2(media["card"] / "ascmhl" / "ascmhl_chain.xml", dest / "A001" / "ascmhl")
+    r = run_pull(tmp_path, media["clips"], dest)
+    assert r.returncode == 1, out(r)
+    assert "ERROR INESPERADO" not in out(r)
+    assert "A001/ascmhl" in out(r) and "relanza" in out(r)
+    assert not (dest / "ascmhl").exists()
+
+
+def test_sigterm_borra_la_carpeta_ascmhl_a_medias(tmp_path, mp, monkeypatch):
+    monkeypatch.setattr(mp.os, "_exit", lambda code: None)
+    part = tmp_path / "A001" / "ascmhl.mhlmm_part"
+    part.mkdir(parents=True)
+    (part / "0001.mhl").write_text("x")
+    monkeypatch.setattr(mp, "_CURRENT_TMP", [str(part)])
+    monkeypatch.setattr(mp, "_COMMITTING", [False])
+    mp.make_on_term(lambda s: None, mp.Status(None), open(tmp_path / "log.txt", "w"))(15, None)
+    assert not part.exists()

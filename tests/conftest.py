@@ -71,3 +71,11 @@ def mp():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+@pytest.fixture
+def work_dirs(tmp_path, mp, monkeypatch):
+    """WORK_DIR y LOG_DIR del módulo dentro de tmp_path (son constantes calculadas con el HOME real al importar)."""
+    monkeypatch.setattr(mp, "WORK_DIR", tmp_path / "home" / "work")
+    monkeypatch.setattr(mp, "LOG_DIR", tmp_path / "home" / "logs")
+    return tmp_path
