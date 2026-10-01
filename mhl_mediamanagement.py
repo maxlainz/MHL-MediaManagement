@@ -8,7 +8,7 @@ Flujo:
   2. Copia (en segundo plano, con progreso en la ventana): ficheros, conservando la estructura desde la raíz común; las tarjetas
      con MHL de origen se copian con su MHL tal cual (carpeta ascmhl/ o .mhl legacy). «Clips del timeline» (tarjeta
      parcial, avisada, D11); «Respetar historial MHL» copia todo lo que atestigua el MHL del DIT de cada tarjeta usada
-     (D19: un MHL que cubre más que las carpetas usadas pide confirmación); «Todo» añade los ficheros sin MHL.
+     (D19/D20: un MHL que cubre varias tarjetas y no todas usadas pide elegir); «Todo» añade los ficheros sin MHL.
   3. Verificación (solo lectura): cada fichero de tarjeta contra su MHL de origen;
      los ficheros sin MHL, origen contra destino.
   4. Solo si TODO cuadra: un ASC MHL de todo el media management en la raíz del destino.
@@ -351,10 +351,27 @@ def es_int(n):
     return f"{n:,}".replace(",", " ")
 
 
+CARD_MIN_FILES = 20  # D20: una carpeta de primer nivel con más ficheros atestiguados que esto cuenta como tarjeta
+
+
+def multi_card(att, used):
+    """D20: ¿el MHL (att = {ruta: tamaño}) cubre varias tarjetas y los clips usados (used = {carpeta: clips}) tocan
+    solo algunas? Carpeta = primera carpeta bajo el MHL (`_top`; los ficheros de la raíz son la pseudo-carpeta «.»).
+    Tarjeta = carpeta con más de CARD_MIN_FILES ficheros atestiguados. Hacen falta al menos dos tarjetas y alguna sin
+    usar. Si no, el MHL es una sola tarjeta aunque guarde cada clip en su propia carpeta (RED .RDC). → (bool, tarjetas)."""
+    first = {}
+    for p in att:
+        t = _top(p)
+        first[t] = first.get(t, 0) + 1
+    cards = sorted(t for t, n in first.items() if n > CARD_MIN_FILES)
+    return len(cards) >= 2 and bool(set(cards) - set(used)), cards
+
+
 def _expand_mhl(plan, items, fs, whole_mhl):
-    """D16/D19: amplía cada tarjeta usada a lo que atestigua su MHL de origen (la lista sale de los manifiestos, no de
-    recorrer la tarjeta). Cuenta lo que está en disco y no en el MHL (no se copia) y lo atestiguado que falta. Un MHL
-    que cubre más que las carpetas usadas va a plan["big_mhl"] y, salvo whole_mhl, se limita a esas carpetas."""
+    """D16/D19/D20: amplía cada tarjeta usada a lo que atestigua su MHL de origen (la lista sale de los manifiestos, no
+    de recorrer la tarjeta). Cuenta lo que está en disco y no en el MHL (no se copia) y lo atestiguado que falta. Un MHL
+    que cubre varias tarjetas y no todas usadas (multi_card) va a plan["big_mhl"] y, salvo whole_mhl, se limita a las
+    carpetas usadas; si no, se copia todo lo que atestigua."""
     have = {it["src"] for it in items}
     notes = {}
     for card, kind in sorted({(it["card"], it["kind"]) for it in items if it["card"]}):
@@ -366,12 +383,16 @@ def _expand_mhl(plan, items, fs, whole_mhl):
             if it["card"] == card:
                 u = _top(os.path.relpath(str(it["src"]), str(card)))
                 used[u] = used.get(u, 0) + 1
-        groups = {_top(p) for p in att}
-        keep = att if "." in used else {p: s for p, s in att.items() if _top(p) in used}
-        if fs.is_mount(card) or groups - set(used) and "." not in used or len(groups - {"."}) > 1:
-            plan["big_mhl"].append({"anchor": str(card), "kind": kind, "files": len(att),
-                                    "bytes": sum(s or 0 for s in att.values()), "used_folders": sorted(used.items()),
-                                    "extra_files": len(att) - len(keep), "limited_files": len(keep)})
+        multi, cards = multi_card(att, used)  # D20 (también si el MHL está en un punto de montaje)
+        keep = {p: s for p, s in att.items() if _top(p) in used} if multi else att
+        if multi:
+            groups = sorted({_top(p) for p in att})
+            plan["big_mhl"].append({
+                "anchor": str(card), "kind": kind, "files": len(att), "bytes": sum(s or 0 for s in att.values()),
+                "used_folders": sorted(used.items()), "cards": cards,
+                "missing_folders": [g for g in groups if g not in used],
+                "extra_files": len(att) - len(keep), "limited_files": len(keep),
+                "limited_bytes": sum(s or 0 for s in keep.values())})
         sel = att if whole_mhl else keep
         absent = 0
         for p in sorted(sel):
@@ -440,6 +461,8 @@ def build_plan(scanned, scope="clips", whole_mhl=False):
             if prev != it["card"]:
                 plan["collisions"].append((it["card_rel"], prev, it["card"]))
     plan["base"] = base
+    for b in plan["big_mhl"]:
+        b["anchor_rel"] = rel_of(Path(b["anchor"]))
     for it in items:  # D11: clips usados de cada tarjeta frente a los que lista su MHL de origen
         if it["card"]:
             c = plan["cards"].setdefault(it["card_rel"], {"kind": it["kind"], "used": 0,
@@ -541,16 +564,85 @@ def human_es(b):
     return human(b).replace(".", ",")
 
 
-def big_mhl_lines(plan):
-    """D19: «MHL de nivel superior: /Volumes/X/DIA_03 cubre 2 340 ficheros (1,8 TB); clips usados en A001 (18), …»."""
+def _esc(t):
+    """Texto plano → HTML de una etiqueta de UIManager."""
+    return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _fname(n):
+    return "(raíz)" if n == "." else n
+
+
+def y_join(names):
+    """["A002", "A004", "A005"] → «A002, A004 y A005»."""
+    names = [_fname(n) for n in names]
+    return " y ".join([", ".join(names[:-1]), names[-1]]) if len(names) > 1 else "".join(names)
+
+
+def big_mhl_header(b):
+    """D20: «MHL de nivel superior: /Volumes/X/DIA_03 (MHL legacy) atestigua 4 tarjetas, 2 340 ficheros, 1,8 TB.
+    Clips usados en A001 (18) y A003 (41).»"""
+    tag = "ASC MHL" if b["kind"] == "asc" else "MHL legacy"
+    used = y_join([f"{_fname(n)} ({k})" for n, k in b["used_folders"]])
+    return (f"MHL de nivel superior: {b['anchor']} ({tag}) atestigua {len(b['cards'])} tarjetas,"
+            f" {es_int(b['files'])} ficheros, {human_es(b['bytes'])}. Clips usados en {used}.")
+
+
+CONFIRM_QUESTION = "Este MHL cubre más que las tarjetas usadas. Elige:"
+
+
+def big_mhl_options(bigs):
+    """D20: (todo, solo usadas, cancelar) con sus consecuencias y cifras de los manifiestos, sumando los MHL de nivel
+    superior del plan. Mismo texto en la ventana, la vista previa y el CLI."""
+    files = sum(b["files"] for b in bigs)
+    size = human_es(sum(b["bytes"] for b in bigs))
+    lfiles = sum(b["limited_files"] for b in bigs)
+    lsize = human_es(sum(b["limited_bytes"] for b in bigs))
+    used = y_join([n for b in bigs for n, _ in b["used_folders"]])
+    missing = y_join([n for b in bigs for n in b["missing_folders"]])
+    return (f"Copiar todo el MHL ({es_int(files)} ficheros, {size}): se lleva toda la media que atestigua, también las"
+            " tarjetas que el timeline no usa; es, a efectos prácticos, copiar el día entero. El destino verifica"
+            " limpio.",
+            f"Solo las carpetas usadas ({es_int(lfiles)} ficheros, {lsize}): se copian {used} enteras y el MHL del"
+            f" DIT tal cual; un verificador externo dirá que en ese MHL faltan {missing}, y el comentario del"
+            " manifiesto lo deja escrito como parcial.",
+            "Cancelar: no se copia nada.")
+
+
+def big_mhl_choice(plan):
+    """D20: línea «Elección: …» para el GuiLog y la cabecera del log del trabajo."""
     out = []
     for b in plan.get("big_mhl") or []:
-        used = ", ".join(f"{'(raíz)' if n == '.' else n} ({k})" for n, k in b["used_folders"])
-        out.append(f"MHL de nivel superior: {b['anchor']} cubre {es_int(b['files'])} ficheros ({human_es(b['bytes'])});"
-                   f" clips usados en {used}")
-        out.append("    → se copia todo el MHL" if plan.get("whole_mhl") else
-                   f"    → solo las carpetas usadas ({es_int(b['limited_files'])} ficheros atestiguados; quedan fuera"
-                   f" {es_int(b['extra_files'])}); al copiar se pide confirmación")
+        name = os.path.basename(b["anchor"].rstrip(os.sep)) or b["anchor"]
+        used = ", ".join(_fname(n) for n, _ in b["used_folders"])
+        nums = (f"{es_int(b['limited_files'])} de {es_int(b['files'])} ficheros,"
+                f" {human_es(b['limited_bytes'])} de {human_es(b['bytes'])}")
+        if plan.get("whole_mhl"):
+            out.append(f"Elección: todo el MHL de {name} ({es_int(b['files'])} ficheros, {human_es(b['bytes'])})"
+                       f" — incluye {', '.join(_fname(n) for n in b['missing_folders'])}, que el timeline no usa")
+        else:
+            out.append(f"Elección: solo carpetas usadas ({used}) — el MHL de {name} cubre además"
+                       f" {', '.join(_fname(n) for n in b['missing_folders'])} · {nums}")
+    return out
+
+
+def big_mhl_lines(plan, cli=False):
+    """D19/D20: cabecera de cada MHL de nivel superior, la pregunta con sus tres salidas y qué se va a hacer."""
+    bigs = plan.get("big_mhl") or []
+    if not bigs:
+        return []
+    out = [big_mhl_header(b) for b in bigs]
+    if plan.get("whole_mhl"):
+        return out + ["    → se copia todo el MHL"]
+    out.append(CONFIRM_QUESTION)
+    opts = big_mhl_options(bigs)
+    if cli:
+        opts = (opts[0].replace("Copiar todo el MHL", "--whole-mhl, copiar todo el MHL", 1),
+                opts[1].replace("Solo las carpetas usadas", "Sin --whole-mhl (lo que se hace ahora), solo las carpetas"
+                                " usadas", 1))
+    out += [f"  · {o}" for o in opts[:2 if cli else 3]]
+    out.append("    → sin --whole-mhl se copian solo las carpetas usadas" if cli else
+               "    → al pulsar Copiar se pide elegir")
     return out
 
 
@@ -889,8 +981,14 @@ SCOPE_WORD = {"clips": "clips del timeline", "mhl": "historial MHL", "all": "tod
 
 
 def mhl_comment(job):
-    """comment del MHL raíz: qué se copió (D16) y las tarjetas copiadas a medias (D11, «; parcial: A001 2/37»)."""
-    partial = cards_summary(job.get("cards") or {}, only_partial=True)
+    """comment del MHL raíz: qué se copió (D16) y las tarjetas copiadas a medias (D11, «; parcial: A001 2/37»); un MHL
+    de varias tarjetas limitado a las usadas, por tarjetas (D20, «; parcial: DIA_03 2/4 tarjetas»)."""
+    bigs = [] if job.get("whole_mhl") else job.get("big_mhl") or []
+    skip = {b.get("anchor_rel") for b in bigs}
+    partial = ", ".join([f"{b.get('anchor_rel')} {len(b['cards']) - len(set(b['missing_folders']) & set(b['cards']))}"
+                         f"/{len(b['cards'])} tarjetas" for b in bigs]
+                        + [x for x in [cards_summary({k: v for k, v in (job.get("cards") or {}).items()
+                                                      if k not in skip}, only_partial=True)] if x])
     scope = job.get("scope", "clips")
     return (f"MHL MediaManagement: media management {job.get('label', '')}".strip()
             + f"; qué copiar: {SCOPE_WORD.get(scope, scope)}" + (" (todo el MHL)" if job.get("whole_mhl") else "")
@@ -961,8 +1059,10 @@ def _work(job, dest, dry, log, st):
     log(f"Destino: {dest}{'   [SIMULACIÓN]' if dry else ''}")
     scope = job.get("scope", "clips")
     log(f"Qué copiar: {SCOPE_LABEL.get(scope, scope)}")
-    for line in big_mhl_lines(job):  # D19
-        log(line.replace("; al copiar se pide confirmación", ""))
+    for b in job.get("big_mhl") or []:  # D19/D20
+        log(big_mhl_header(b))
+    for line in big_mhl_choice(job):
+        log(line)
     cards_txt = cards_summary(job.get("cards") or {})
     if cards_txt:  # D11: cuántos clips de cada tarjeta y cuáles van a medias
         log(f"Tarjetas: {cards_txt}")
@@ -1652,12 +1752,13 @@ def gui(resolve, bmd):
             ui.Label({"ID": "Progress", "Weight": 0, "WordWrap": True, "Text": ""}),
             ui.TextEdit({"ID": "Preview", "ReadOnly": True, "Weight": 3,
                          "Font": ui.Font({"Family": "Menlo", "PixelSize": 11})}),
-            ui.HGroup({"Weight": 0}, [  # D19: confirmación en línea (UIManager no trae diálogos); oculta hasta Copiar
+            ui.HGroup({"Weight": 0}, [  # D19/D20: confirmación en línea (UIManager no trae diálogos); oculta hasta Copiar
                 ui.Label({"ID": "ConfirmText", "WordWrap": True, "Hidden": True}),
                 ui.Button({"ID": "ConfirmAll", "Text": "Copiar todo el MHL", "Weight": 0, "Hidden": True}),
                 ui.Button({"ID": "ConfirmUsed", "Text": "Solo las carpetas usadas", "Weight": 0, "Hidden": True}),
                 ui.Button({"ID": "ConfirmCancel", "Text": "Cancelar", "Weight": 0, "Hidden": True}),
             ]),
+            ui.Label({"ID": "ConfirmHelp", "Weight": 0, "WordWrap": True, "Hidden": True}),  # D20: consecuencias
             ui.HGroup({"Weight": 0}, [
                 ui.Label({"ID": "Status", "Text": ""}),
                 ui.Button({"ID": "Run", "Text": "4 · Copiar y verificar", "Weight": 0, "Enabled": False}),
@@ -1679,7 +1780,7 @@ def gui(resolve, bmd):
         for t in labels:
             itm["Scope"].AddItem(t)
     itm["Scope"].CurrentIndex = 0
-    CONFIRM = ("ConfirmText", "ConfirmAll", "ConfirmUsed", "ConfirmCancel")
+    CONFIRM = ("ConfirmText", "ConfirmAll", "ConfirmUsed", "ConfirmCancel", "ConfirmHelp")
 
     def scope():
         return scope_from_index(itm["Scope"].CurrentIndex)
@@ -1855,33 +1956,41 @@ def gui(resolve, bmd):
             itm["Status"].Text = "Nada que copiar. Pulsa Preparar."; return
         if checked_dest(plan) is None:
             return
-        if plan["big_mhl"]:  # D19: un MHL que cubre más que las carpetas usadas pide confirmación
+        if plan["big_mhl"]:  # D19/D20: un MHL que cubre varias tarjetas y no todas usadas pide elegir
             whole = build_plan(state["scanned"], plan["scope"], whole_mhl=True)
             state["whole_plan"] = whole
             b = plan["big_mhl"]
-            used = "; ".join(", ".join(f"{'(raíz)' if n == '.' else n} ({k})" for n, k in x["used_folders"]) for x in b)
-            itm["ConfirmText"].Text = ("<b>El MHL cubre más que las carpetas usadas.</b> " + " · ".join(
-                f"{x['anchor']} ({'ASC MHL' if x['kind'] == 'asc' else 'MHL legacy'}): {es_int(x['files'])} ficheros,"
-                f" {human_es(x['bytes'])}" for x in b) + f" · carpetas usadas: {used}")
-            itm["ConfirmAll"].Text = f"Copiar todo el MHL ({es_int(len(whole['items']))})"
-            itm["ConfirmUsed"].Text = f"Solo las carpetas usadas ({es_int(len(plan['items']))})"
+            opt_all, opt_used, opt_cancel = big_mhl_options(b)
+            itm["ConfirmText"].Text = f"<b>{_esc(CONFIRM_QUESTION)}</b>"
+            itm["ConfirmAll"].Text = opt_all.split(":", 1)[0]
+            itm["ConfirmUsed"].Text = opt_used.split(":", 1)[0]
+            itm["ConfirmHelp"].Text = "<br>".join(
+                [_esc(big_mhl_header(x)) for x in b]
+                + [f"<b>{_esc(o.split(':', 1)[0])}:</b>{_esc(o.split(':', 1)[1])}" for o in (opt_all, opt_used,
+                                                                                            opt_cancel)])
             show_confirm(True)
-            glog(f"D19: confirmación pedida · {len(b)} MHL de nivel superior · todo {len(whole['items'])}"
+            glog(f"D20: confirmación pedida · {len(b)} MHL de nivel superior · todo {len(whole['items'])}"
                  f" · solo usadas {len(plan['items'])}")
+            for x in b:
+                glog("D20: " + big_mhl_header(x))
             itm["Status"].Text = "Elige qué copiar del MHL de nivel superior."
             return
         start(plan)
 
     def confirm(choice):
         def h(ev):
-            glog(f"D19: elección «{choice}»")
             show_confirm(False)
             if choice == "all":
-                start(state.get("whole_plan") or build_plan(state["scanned"], state["plan"]["scope"], whole_mhl=True))
+                plan = state.get("whole_plan") or build_plan(state["scanned"], state["plan"]["scope"], whole_mhl=True)
             elif choice == "used":
-                start(state["plan"])
+                plan = state["plan"]
             else:
+                glog("Elección: cancelar — no se copia nada")
                 itm["Status"].Text = "Cancelado: no se ha copiado nada."
+                return
+            for line in big_mhl_choice(plan):  # D20: la elección con sus cifras
+                glog(line)
+            start(plan)
         return h
 
     def start(plan):
@@ -2033,7 +2142,7 @@ def cli(argv):
                          " no tiene MHL")
     ap.add_argument("--all", action="store_true", help="alias de --scope all")
     ap.add_argument("--whole-mhl", action="store_true",
-                    help="con --scope mhl/all, copiar todo un MHL de nivel superior, no solo las carpetas usadas (D19)")
+                    help="con --scope mhl/all, copiar todo un MHL que cubre varias tarjetas, no solo las carpetas usadas (D19, D20)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--diag", action="store_true", help="diagnóstico del entorno (intérprete, ascmhl, carpetas)")
     ap.add_argument("--selftest", action="store_true", help="autotest: trabajo real sobre una tarjeta sintética")
@@ -2053,8 +2162,8 @@ def cli(argv):
         if not plan["items"]:
             print("Nada que copiar."); return 2
         print(f"Qué copiar: {SCOPE_LABEL[plan['scope']]}")
-        for line in big_mhl_lines(plan):  # D19
-            print(line.replace("al copiar se pide confirmación", "--whole-mhl copia todo el MHL"))
+        for line in big_mhl_lines(plan, cli=True):  # D19/D20: sin --whole-mhl, solo las carpetas usadas
+            print(line)
         for rel, c in sorted(plan["cards"].items()):
             print(card_line(rel, c))
             for n in card_notes(rel, c):
