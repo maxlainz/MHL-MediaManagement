@@ -23,4 +23,3 @@
 2. Issue #1: renombrado del script, de la entrada de menú y de las rutas, `__version__` y fix de los dos avisos de ruff (D2, D8).
 
 **Cierre del orquestador (2026-10-01).** Repo publicado en https://github.com/maxlainz/MHL-MediaManagement (público, MIT, topics asc-mhl · mhl · davinci-resolve · media-management). Primer run de `ci.yml` en Linux: **verde** (leak-check, ruff, 10 tests). Issue #1 abierto para el renombrado del script. Sin tag aún: `v0.1.0` cuando el owner pruebe la versión una vez dentro de Resolve (skill `release`).
-_Esta entrada la cierra el orquestador con los resultados reales de la CI y la URL del repo._
