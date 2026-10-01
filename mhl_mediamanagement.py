@@ -50,49 +50,59 @@ ASCMHL_CANDIDATES = ["/opt/homebrew/bin/ascmhl", "/usr/local/bin/ascmhl"] + sort
 # ======================================================================
 
 class FS:
-    """Lee cada carpeta UNA vez (clave con secuencias de miles de frames en red)."""
+    """Lee cada carpeta UNA vez (clave con secuencias de miles de frames en red). H4, H6: ni un stat por fichero."""
 
     def __init__(self):
         self.listing, self.cards = {}, {}
 
     def ls(self, d):
+        """{nombre: es_carpeta} de la carpeta d (un solo scandir; d_type, sin stat salvo enlaces), o None si no se lee."""
         if d not in self.listing:
             try:
-                self.listing[d] = set(os.listdir(d))
+                with os.scandir(d) as it:
+                    self.listing[d] = {e.name: e.is_dir() for e in it}
             except OSError:
                 self.listing[d] = None
         return self.listing[d]
 
     def card_for(self, d):
-        """Ancestro más cercano con MHL de origen → (Path, 'asc'|'legacy') o (None, None)."""
+        """Ancestro más cercano con MHL de origen → (Path, 'asc'|'legacy') o (None, None). No sube por encima de un punto de montaje."""
         d = str(d)
         if d in self.cards:
             return self.cards[d]
-        names = self.ls(d) or set()
-        if "ascmhl" in names and os.path.isdir(os.path.join(d, "ascmhl")):
+        names = self.ls(d) or {}
+        if names.get("ascmhl"):
             res = (Path(d), "asc")
         elif any(n.lower().endswith(".mhl") for n in names):
             res = (Path(d), "legacy")
         else:
             parent = os.path.dirname(d)
-            res = self.card_for(parent) if parent and parent != d else (None, None)
+            if not parent or parent == d or os.path.ismount(d):
+                res = (None, None)
+            else:
+                res = self.card_for(parent)
         self.cards[d] = res
         return res
 
 
 def expand(path, fs):
-    """Ruta de Resolve → [Path]. Secuencias clip.[0086400-0086500].exr con un solo listado."""
-    m = SEQ_RE.search(path)
+    """Ruta de Resolve → [Path]. Secuencias clip.[0086400-0086500].exr con un solo listado; sin stat por fichero."""
+    path = os.path.normpath(path)
+    d, name = os.path.split(path)
+    names = fs.ls(d) or {}
+    m = None
+    if name not in names:  # un fichero que existe con corchetes en el nombre no es una secuencia
+        ms = list(SEQ_RE.finditer(name))
+        m = ms[-1] if ms else None
     if not m:
-        return [Path(path)] if os.path.isfile(path) else []
+        return [Path(path)] if name in names and not names[name] else []
     lo, hi = int(m.group(1)), int(m.group(2))
-    d, pre = os.path.split(path[:m.start()])
-    rx = re.compile(re.escape(pre) + r"(\d+)" + re.escape(path[m.end():]) + r"$")
+    rx = re.compile(re.escape(name[:m.start()]) + r"(\d+)" + re.escape(name[m.end():]) + r"$")
     out = []
-    for name in fs.ls(d) or ():
-        mm = rx.match(name)
-        if mm and lo <= int(mm.group(1)) <= hi:
-            out.append(Path(d) / name)
+    for n in names:
+        mm = rx.match(n)
+        if mm and lo <= int(mm.group(1)) <= hi and not names[n]:
+            out.append(Path(d) / n)
     return sorted(out)
 
 
@@ -138,7 +148,7 @@ def scan(raw_paths, log=print):
 def build_plan(scanned, camera_only):
     excluded = [it for it in scanned["items"] if camera_only and it["kind"] == "none"]
     items = [dict(it) for it in scanned["items"] if not (camera_only and it["kind"] == "none")]
-    plan = {"base": None, "items": items, "excluded": excluded, "missing": scanned["missing"]}
+    plan = {"base": None, "items": items, "excluded": excluded, "missing": scanned["missing"], "collisions": []}
     if not items:
         return plan
     cards = {it["card"] for it in items if it["card"]}
@@ -156,22 +166,63 @@ def build_plan(scanned, camera_only):
             return str(p.relative_to(vol)) if vol in p.parents else str(p.relative_to("/"))
         return str(p.relative_to(base))
 
+    by_rel, by_card_rel = {}, {}
     for it in items:
         it["rel"] = rel_of(it["src"])
         it["card_rel"] = rel_of(it["card"]) if it["card"] else None
+        # con raíz "/", un disco montado en /Volumes con una carpeta Users y el /Users local pueden coincidir
+        prev = by_rel.setdefault(it["rel"], it["src"])
+        if prev != it["src"]:
+            plan["collisions"].append((it["rel"], prev, it["src"]))
+        if it["card"]:
+            prev = by_card_rel.setdefault(it["card_rel"], it["card"])
+            if prev != it["card"]:
+                plan["collisions"].append((it["card_rel"], prev, it["card"]))
     plan["base"] = base
     plan["anchors"] = sorted({it["card"] or it["src"].parent for it in items})
     return plan
 
 
+def _inside(p, a):
+    """p es a o cuelga de a (rutas ya resueltas con realpath)."""
+    return p == a or p.startswith(a.rstrip(os.sep) + os.sep)
+
+
 def dest_conflict(plan, d):
-    """Motivo por el que el destino no vale, o None. Solo bloquea solapes reales con carpetas de origen."""
-    for a in plan["anchors"]:
-        if d == a or a in d.parents:
+    """Motivo por el que el destino no vale, o None. Bloquea solapes reales con el origen, también a través de
+    enlaces simbólicos o de un segundo montaje (realpath en los dos lados; un realpath por carpeta, no por frame)."""
+    if plan.get("collisions"):
+        rel, a, b = plan["collisions"][0]
+        return f"Dos orígenes distintos irían al mismo sitio del destino ({rel}): {a} y {b}"
+    rdirs = {}
+
+    def real(p):
+        p = str(p)
+        h, t = os.path.split(p)
+        if h not in rdirs:
+            rdirs[h] = os.path.realpath(h)
+        return os.path.join(rdirs[h], t)
+
+    anchors = [(a, os.path.realpath(str(a))) for a in plan["anchors"]]
+    rd = os.path.realpath(str(d))
+    for a, ra in anchors:
+        if _inside(rd, ra):
             return f"El destino está dentro de una carpeta de origen: {a}"
+    srcs = {real(it["src"]): it["src"] for it in plan["items"]}
+    targets = {}  # carpeta de destino resuelta → ruta mostrada
     for it in plan["items"]:
-        if (d / it["rel"]) == it["src"]:
-            return f"Se copiaría un fichero sobre sí mismo: {it['src']}"
+        t = real(d / it["rel"])
+        if t in srcs:
+            if srcs[t] == it["src"]:
+                return f"Se copiaría un fichero sobre sí mismo: {it['src']}"
+            return f"Se copiaría encima de otro fichero de origen: {srcs[t]}"
+        targets.setdefault(os.path.dirname(t), d / os.path.dirname(it["rel"]))
+        if it["card_rel"]:
+            targets.setdefault(real(d / it["card_rel"]), d / it["card_rel"])
+    for t, shown in targets.items():
+        for a, ra in anchors:
+            if _inside(t, ra):
+                return f"Se escribiría dentro de una carpeta de origen ({a}): {shown}"
     return None
 
 
@@ -250,6 +301,8 @@ def human(b):
 
 CHUNK = 32 * 1024 * 1024
 _CURRENT_TMP = [None]
+_COMMITTING = [False]   # durante commit_session un SIGTERM no corta: se termina de escribir el MHL
+_CANCEL_ASKED = [False]
 
 
 class Status:
@@ -275,7 +328,7 @@ class Status:
 
 
 def hash_file(path, formats, on_bytes=None):
-    """Una sola lectura → {formato: hex}. Formatos ASC (md5, sha1, xxh64, xxh128, xxh3) + legacy."""
+    """Una sola lectura → {formato: hex}. Para MHL legacy y ficheros sin MHL; los formatos ASC van por hash_asc."""
     import xxhash
     makers = {"md5": hashlib.md5, "sha1": hashlib.sha1, "xxh64": xxhash.xxh64, "xxh128": xxhash.xxh128,
               "xxh3": xxhash.xxh3_64, "xxhash64be": xxhash.xxh64, "xxhash64": xxhash.xxh64, "xxhash": xxhash.xxh32}
@@ -289,12 +342,39 @@ def hash_file(path, formats, on_bytes=None):
     return {f: h.hexdigest() for f, h in hs.items()}
 
 
+def hash_asc(path, formats, on_bytes=None):
+    """Una sola lectura → {formato: hash} con los hashers de la referencia ascmhl (D6): misma codificación que su
+    verify (c4 incluido). Un formato que ascmhl no conoce → ValueError antes de leer el fichero."""
+    from ascmhl.hasher import new_hasher_for_hash_type
+    hs = {}
+    for f in set(formats):
+        try:
+            hs[f] = new_hasher_for_hash_type(f)
+        except (KeyError, ValueError):
+            raise ValueError(f"formato de hash no soportado: {f}") from None
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(CHUNK), b""):
+            for h in hs.values():
+                h.update(chunk)
+            if on_bytes:
+                on_bytes(len(chunk))
+    return {f: h.string_digest() for f, h in hs.items()}
+
+
+def legacy_mhl_names(card):
+    """Los .mhl legacy de la tarjeta, sin distinguir mayúsculas (CARD.MHL), con un solo listado."""
+    try:
+        return sorted(n for n in os.listdir(card) if n.lower().endswith(".mhl"))
+    except OSError:
+        return []
+
+
 def legacy_hashes(card):
     out = {}
-    for mhl in Path(card).glob("*.mhl"):
+    for name in legacy_mhl_names(card):
         try:
-            root = ET.parse(mhl).getroot()
-        except ET.ParseError:
+            root = ET.parse(os.path.join(card, name)).getroot()
+        except (ET.ParseError, OSError):
             continue
         for h in root.iter("hash"):
             f = h.findtext("file")
@@ -317,15 +397,41 @@ def copy_file(src, dst, on_bytes=None):
         return False, s.st_size
     tmp = dst.with_name(dst.name + ".mhlmm_part")
     _CURRENT_TMP[0] = tmp
-    with open(src, "rb") as fi, open(tmp, "wb") as fo:
-        for chunk in iter(lambda: fi.read(CHUNK), b""):
-            fo.write(chunk)
-            if on_bytes:
-                on_bytes(len(chunk))
-    shutil.copystat(src, tmp)
-    os.replace(tmp, dst)
-    _CURRENT_TMP[0] = None
+    try:
+        with open(src, "rb") as fi, open(tmp, "wb") as fo:
+            for chunk in iter(lambda: fi.read(CHUNK), b""):
+                fo.write(chunk)
+                if on_bytes:
+                    on_bytes(len(chunk))
+        shutil.copystat(src, tmp)
+        os.replace(tmp, dst)
+    except BaseException:
+        try:  # nunca queda un .mhlmm_part a medias en destino
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    finally:
+        _CURRENT_TMP[0] = None
     return True, s.st_size
+
+
+def make_on_term(log, st, logf):
+    """Manejador de SIGTERM (Cancelar). Durante commit_session no corta: marca la petición y _work termina de
+    escribir el MHL, para no dejar generaciones a medias en las tarjetas."""
+    def on_term(signum, frame):
+        if _COMMITTING[0]:
+            _CANCEL_ASKED[0] = True
+            log("\n… Cancelación recibida mientras se escribe el MHL: se termina de escribir y se sale.")
+            return
+        tmp = _CURRENT_TMP[0]
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
+        log("\n✗ CANCELADO por el usuario. No se ha creado el MHL.")
+        st.set(force=True, state="cancelled", msg="Cancelado")
+        logf.close()
+        os._exit(130)
+    return on_term
 
 
 def worker(job_path, status_path=None):
@@ -339,15 +445,7 @@ def worker(job_path, status_path=None):
     def log(s=""):
         print(s, flush=True); logf.write(s + "\n"); logf.flush()
 
-    def on_term(signum, frame):
-        tmp = _CURRENT_TMP[0]
-        if tmp and os.path.exists(tmp):
-            os.remove(tmp)
-        log("\n✗ CANCELADO por el usuario. No se ha creado el MHL.")
-        st.set(force=True, state="cancelled", msg="Cancelado")
-        logf.close()
-        os._exit(130)
-    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGTERM, make_on_term(log, st, logf))
 
     try:
         return _work(job, dest, dry, log, st)
@@ -358,6 +456,43 @@ def worker(job_path, status_path=None):
         return 1
     finally:
         logf.close()
+
+
+def _mhl_dirs(history):
+    """Carpetas ascmhl/ de la raíz y de cada tarjeta anidada → {carpeta: set(ficheros)}."""
+    from ascmhl.history import MHLHistory
+    out = {}
+    for h in MHLHistory.walk_child_histories(history):
+        d = h.asc_mhl_path
+        try:
+            out[d] = set(os.listdir(d))
+        except OSError:
+            out[d] = set()
+    return out
+
+
+def _commit(session, history, dest, job, log):
+    """commit_session sin que SIGTERM lo corte; si falla, deja en el log qué generaciones llegó a escribir."""
+    from ascmhl.commands import commit_session
+    before = _mhl_dirs(history)
+    _COMMITTING[0] = True
+    try:
+        commit_session(session, os.environ.get("USER") or None, None, None, None, None,
+                       f"MHL MediaManagement: media management {job.get('label', '')}".strip())
+    except Exception:
+        import traceback
+        log("\n✗ ERROR escribiendo el MHL\n" + traceback.format_exc())
+        written = [os.path.join(d, n) for d, names in _mhl_dirs(history).items() for n in sorted(names - before.get(d, set()))]
+        if written:
+            log("  Generaciones escritas antes del error (huérfanas, revisar a mano):")
+            for w in written:
+                log(f"    {os.path.relpath(w, dest)}")
+        return 1, "failed", "✗ Error escribiendo el MHL (ver log)"
+    finally:
+        _COMMITTING[0] = False
+    if _CANCEL_ASKED[0]:
+        log("Cancelación pedida durante la escritura: el MHL se ha terminado de escribir completo.")
+    return 0, "done", ""
 
 
 def _work(job, dest, dry, log, st):
@@ -395,7 +530,7 @@ def _work(job, dest, dry, log, st):
         st.set(force=True, state="done", msg="Simulación terminada")
         return 0
 
-    cards = {}
+    cards, legacy_mhls = {}, []
     for it in items:
         if it["card"]:
             cards.setdefault(it["card"], (it["card_rel"], it["kind"]))
@@ -406,10 +541,12 @@ def _work(job, dest, dry, log, st):
                 shutil.copytree(Path(card) / "ascmhl", dcard / "ascmhl")
                 log(f"MHL copiado: {card_rel}/ascmhl/")
             elif kind == "legacy":
-                for m in Path(card).glob("*.mhl"):
-                    if not (dcard / m.name).exists():
-                        shutil.copy2(m, dcard / m.name)
-                        log(f"MHL copiado: {card_rel}/{m.name}")
+                for name in legacy_mhl_names(card):
+                    m = Path(card) / name
+                    if not (dcard / name).exists():
+                        shutil.copy2(m, dcard / name)
+                        log(f"MHL copiado: {card_rel}/{name}")
+                    legacy_mhls.append((m, dcard / name, f"{card_rel}/{name}"))
         except OSError as e:
             log(f"✗ ERROR copiando MHL de {card_rel}: {e}"); errors.append(card_rel)
 
@@ -435,8 +572,12 @@ def _work(job, dest, dry, log, st):
                 fmts = child.find_existing_hash_formats_for_path(rel) or []
                 if not fmts:
                     fails.append(f"{it['rel']}: no figura en el MHL de origen"); continue
-                got = hash_file(dst, set(fmts) | {ROOT_HASH}, on_bytes)
-                bad = [f for f in fmts if child.find_first_hash_entry_for_path(rel, f).hash_string.lower() != got[f]]
+                try:
+                    got = hash_asc(dst, set(fmts) | {ROOT_HASH}, on_bytes)
+                except ValueError as e:
+                    fails.append(f"{it['rel']}: {e}"); continue
+                # comparación exacta, como la referencia: un hex en mayúsculas en el MHL del DIT no vale (H7)
+                bad = [f for f in fmts if child.find_first_hash_entry_for_path(rel, f).hash_string != got[f]]
                 if bad:
                     fails.append(f"{it['rel']}: hash distinto al del MHL de origen ({', '.join(bad)})"); continue
                 rec = {f: got[f] for f in fmts}
@@ -466,6 +607,30 @@ def _work(job, dest, dry, log, st):
         ok_count += 1
         if n % 200 == 0 or n == N:
             log(f"[{n}/{N}] verificados OK: {ok_count}  fallos: {len(fails)}")
+    # los .mhl legacy copiados entran en el MHL raíz como ficheros (si no, la verificación de la referencia los
+    # da por «new file»); antes, copia contra origen
+    for m, dm, rel in legacy_mhls:
+        try:
+            got = hash_file(dm, {ROOT_HASH})[ROOT_HASH]
+            if got != hash_file(m, {ROOT_HASH})[ROOT_HASH]:
+                fails.append(f"{rel}: el MHL legacy copiado no es igual al de origen"); continue
+            stt = dm.stat()
+        except OSError as e:
+            fails.append(f"{rel}: {e}"); continue
+        records.append((str(dm), stt.st_size, datetime.datetime.fromtimestamp(stt.st_mtime), {ROOT_HASH: got}))
+
+    # contra generaciones anteriores del propio destino (relanzado): un hash distinto haría que ascmhl escribiera
+    # action="failed" en el MHL (H9), así que se para antes
+    if not fails and not errors:
+        for path, size, mtime, rec in records:
+            hist, hrel = history.find_history_for_path(history.get_relative_file_path(path))
+            if hrel is None:
+                continue
+            prev = {f: hist.find_first_hash_entry_for_path(hrel, f) for f in rec}
+            bad = [f for f, h in rec.items() if prev[f] is not None and prev[f].hash_string != h]
+            if bad:
+                fails.append(f"{os.path.relpath(path, dest)}: hash distinto al de una generación anterior del destino"
+                             f" ({', '.join(bad)})")
     for f in fails:
         log(f"  ✗ {f}")
 
@@ -479,18 +644,25 @@ def _work(job, dest, dry, log, st):
         msg = f"✗ {len(fails)} fallos, {len(errors)} errores de copia — MHL NO creado"
     else:
         from ascmhl.generator import MHLGenerationCreationSession
-        from ascmhl.commands import commit_session
         session = MHLGenerationCreationSession(history)
+        rejected = []
         for path, size, mtime, rec in records:
             # formatos del DIT primero ("verified"), luego el xxh64 del media management.
-            # (append_multiple_format_file_hashes de ascmhl 1.2 tiene un bug; se usa append_file_hash)
+            # (append_multiple_format_file_hashes de ascmhl 1.2 tiene un bug, H2; se usa append_file_hash)
             for fmt, h in rec.items():
-                session.append_file_hash(path, size, mtime, fmt, h)
-        commit_session(session, os.environ.get("USER", ""), None, None, None, None,
-                       f"MHL MediaManagement: media management {job.get('label', '')}".strip())
-        log(f"✓ ASC MHL creado en {dest}/ascmhl/ ({len(records)} ficheros, {ROOT_HASH})")
-        result, state = 0, "done"
-        msg = f"✓ {ok_count}/{N} verificados · ASC MHL creado"
+                if not session.append_file_hash(path, size, mtime, fmt, h):
+                    rejected.append(f"{os.path.relpath(path, dest)} ({fmt})")
+        if rejected:  # H9: commitear escribiría action="failed"
+            for r in rejected:
+                log(f"  ✗ ascmhl rechaza el hash: {r}")
+            log("✗ NO se crea el MHL: ascmhl rechaza hashes que la verificación había dado por buenos.")
+            result, state = 1, "failed"
+            msg = f"✗ ascmhl rechaza {len(rejected)} hashes — MHL NO creado"
+        else:
+            result, state, msg = _commit(session, history, dest, job, log)
+            if result == 0:
+                log(f"✓ ASC MHL creado en {dest}/ascmhl/ ({len(records)} ficheros, {ROOT_HASH})")
+                msg = f"✓ {ok_count}/{N} verificados · ASC MHL creado"
 
     log("\n================ RESUMEN ================")
     log(f"Copiados/verificados OK: {ok_count}/{N}   Fallos: {len(fails)}   Errores de copia: {len(errors)}")

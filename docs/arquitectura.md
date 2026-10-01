@@ -17,12 +17,12 @@ Cómo está hecho `mhl_mediamanagement.py` hoy (primera versión, antes de `v0.1
 ### Preparación (Python de Resolve, solo stdlib)
 | Función | Qué hace |
 |---|---|
-| `FS` | Caché de listados: cada carpeta se lista **una sola vez** (`ls`). `card_for(d)` sube por los ancestros hasta encontrar `ascmhl/` (→ `asc`) o un `*.mhl` (→ `legacy`); si no hay, `none`. Memoriza el resultado por carpeta. |
-| `expand(path, fs)` | Ruta de Resolve → lista de ficheros. Las secuencias `clip.[0086400-0086500].exr` se resuelven con un solo listado de la carpeta y una regex, sin `stat` por frame. |
+| `FS` | Caché de listados: cada carpeta se lista **una sola vez** con `os.scandir` (`ls` → `{nombre: es_carpeta}`, `None` si no se puede leer; el tipo sale del listado, sin `stat`). `card_for(d)` sube por los ancestros hasta encontrar una carpeta `ascmhl/` (→ `asc`) o un `.mhl` en cualquier combinación de mayúsculas (→ `legacy`); si no hay, `none`. No sube por encima de un punto de montaje (`os.path.ismount`, uno por ancestro y memorizado). Memoriza el resultado por carpeta. |
+| `expand(path, fs)` | Ruta de Resolve → lista de ficheros, sin un solo `stat` por fichero (H6). Normaliza la ruta (`normpath`); un fichero suelto existe si su nombre está en el listado de la carpeta y no es carpeta. El patrón de secuencia `[inicio-fin]` se busca **solo en el nombre** (última aparición) y solo si ese nombre no existe tal cual; la secuencia se resuelve con el mismo listado y una regex. |
 | `list_timelines`, `timeline_paths` | Timelines del proyecto y rutas (`File Path`) de los clips de vídeo y audio de cada uno. |
 | `scan(raw_paths)` | Expande cada ruta, asigna tarjeta y tipo (`asc`/`legacy`/`none`) por grupo (los frames comparten carpeta) y elimina duplicados entre timelines y secuencias solapadas. Devuelve `items` y `missing`. |
-| `build_plan(scanned, camera_only)` | Filtra lo que no es cámara si toca; calcula la **raíz común** (nunca dentro de una tarjeta) y la ruta relativa de cada fichero y tarjeta (ver «Raíz común»). Guarda `anchors` (tarjetas o carpetas de origen). |
-| `dest_conflict(plan, d)` | Motivo por el que el destino no vale, o `None`. Solo bloquea solapes reales: destino dentro de una carpeta de origen, o un fichero que se copiaría sobre sí mismo. |
+| `build_plan(scanned, camera_only)` | Filtra lo que no es cámara si toca; calcula la **raíz común** (nunca dentro de una tarjeta) y la ruta relativa de cada fichero y tarjeta (ver «Raíz común»). Guarda `anchors` (tarjetas o carpetas de origen) y `collisions`: dos orígenes distintos con la misma ruta en destino (fichero o tarjeta), posible con raíz `/`. |
+| `dest_conflict(plan, d)` | Motivo por el que el destino no vale, o `None`. Compara rutas resueltas con `realpath` en los dos lados (un `realpath` por ancla y por carpeta, nunca por frame), así que ve también enlaces simbólicos y segundos montajes. Bloquea: (1) cualquier colisión del plan; (2) destino igual a una carpeta de origen o dentro de ella; (3) `DEST/rel` de un fichero igual al origen de **cualquier** fichero del plan (sobre sí mismo o encima de otro); (4) la carpeta de `DEST/rel` o `DEST/card_rel` (donde va el `ascmhl/` de la tarjeta) igual a una carpeta de origen o dentro de ella. |
 | `plan_counts`, `preview_lines` | Recuento por tipo y vista previa agrupada por tarjeta (excluidos y no encontrados al final). |
 | `job_from_plan(plan, dest, dry_run, label)` | Serializa el plan a un dict JSON para el worker. |
 
@@ -37,21 +37,25 @@ Cómo está hecho `mhl_mediamanagement.py` hoy (primera versión, antes de `v0.1
 ### Worker (Python de `ascmhl`)
 | Función | Qué hace |
 |---|---|
-| `worker(job_path, status_path)` | Abre el log, crea el `Status`, instala el manejador de SIGTERM (borra el fichero a medias, marca `cancelled`, sale con 130) y llama a `_work`. Una excepción no prevista → `failed` con traza en el log. |
+| `worker(job_path, status_path)` | Abre el log, crea el `Status`, instala el manejador de SIGTERM (`make_on_term`) y llama a `_work`. Una excepción no prevista → `failed` con traza en el log. |
+| `make_on_term(log, st, logf)` | Manejador de SIGTERM (Cancelar): borra el fichero a medias, marca `cancelled` y sale con 130. Mientras se escribe el MHL (`_COMMITTING`) no corta: anota la petición y el MHL se termina de escribir. |
 | `Status` | Escribe el estado (`state`, `phase`, `n/total`, bytes, velocidad, fichero, fallos, mensaje) en JSON de forma atómica (`.tmp` + `os.replace`), como mucho cada 0,3 s salvo `force`. |
-| `copy_file(src, dst)` | Copia por bloques de 32 MiB a `*.mhlmm_part` y renombra; conserva fechas (`copystat`). Si el destino ya existe con el mismo tamaño, no copia (relanzado). |
-| `_work(job, …)` | **1 · Copia** de ficheros y de los MHL de origen de cada tarjeta (`ascmhl/` entero o los `*.mhl` legacy). **2 · Verificación** solo lectura (ver abajo). **3 · MHL**: solo si no hay fallos ni errores de copia, una `MHLGenerationCreationSession` sobre `DEST` con `append_file_hash` por formato y `commit_session`. |
-| `hash_file(path, formats)` | Una sola lectura calcula todos los formatos pedidos. |
-| `legacy_hashes(card)` | Lee los `*.mhl` 1.x de la tarjeta → `{ruta: (algoritmo, hash)}`, en orden de preferencia `xxhash64be`, `xxhash64`, `md5`, `sha1`, `xxhash`. |
+| `copy_file(src, dst)` | Copia por bloques de 32 MiB a `*.mhlmm_part` y renombra; conserva fechas (`copystat`). Si el destino ya existe con el mismo tamaño, no copia (relanzado). Ante cualquier error borra el `.mhlmm_part` y relanza la excepción. |
+| `_work(job, …)` | **1 · Copia** de ficheros y de los MHL de origen de cada tarjeta (`ascmhl/` entero o los `.mhl` legacy). **2 · Verificación** solo lectura (ver abajo). **3 · MHL**: solo si no hay fallos ni errores de copia, una `MHLGenerationCreationSession` sobre `DEST` con `append_file_hash` por formato; si `append_file_hash` devuelve `False` en algún hash (H9) no se commitea. |
+| `_commit(session, history, dest, job, log)` | `commit_session` (autor = `$USER` o ninguno) con `_COMMITTING` activo. Si falla, compara los `ascmhl/` de la raíz y de cada tarjeta antes y después y deja en el log las generaciones huérfanas que llegó a escribir. |
+| `hash_asc(path, formats)` | Formatos ASC con los hashers de la referencia (`ascmhl.hasher.new_hasher_for_hash_type`: `md5`, `sha1`, `xxh32`, `xxh64`, `xxh3`, `xxh128`, `c4`), una sola lectura. Un formato que `ascmhl` no conoce → fallo de ese fichero («formato de hash no soportado»). |
+| `hash_file(path, formats)` | Una sola lectura calcula todos los formatos pedidos; para MHL legacy y ficheros sin MHL. |
+| `legacy_mhl_names(card)`, `legacy_hashes(card)` | Los `.mhl` 1.x de la tarjeta (un `listdir`, sin distinguir mayúsculas: `CARD.MHL` vale) → `{ruta: (algoritmo, hash)}`, en orden de preferencia `xxhash64be`, `xxhash64`, `md5`, `sha1`, `xxhash`. |
 
 ### Verificación (paso 2)
-- **Tarjeta ASC MHL**: `MHLHistory.load_from_path(DEST)` (el historial del DIT ya copiado), formatos que figuran para el fichero, comparación de cada uno y cálculo del `xxh64` del media management en la misma lectura. En el MHL nuevo entran los formatos del DIT y el `xxh64`.
-- **Tarjeta legacy**: el algoritmo que figura en el `.mhl`; `xxhash64` (little-endian) se compara también con los bytes invertidos. En el MHL nuevo entra solo el `xxh64`.
+- **Tarjeta ASC MHL**: `MHLHistory.load_from_path(DEST)` (el historial del DIT ya copiado), formatos que figuran para el fichero, cálculo con los hashers de `ascmhl` (`hash_asc`) y comparación **exacta** de cada uno, como la referencia (un hex en mayúsculas en el MHL del DIT es un fallo, H7); el `xxh64` del media management sale de la misma lectura. En el MHL nuevo entran los formatos del DIT y el `xxh64`.
+- **Tarjeta legacy**: el algoritmo que figura en el `.mhl`; `xxhash64` (little-endian) se compara también con los bytes invertidos. En el MHL nuevo entra solo el `xxh64`. Los propios `.mhl` copiados se comparan con los de origen y entran en el MHL raíz como ficheros (`original`), porque la referencia no los ignora y, sin ellos, `ascmhl-debug verify DEST` los da por «new file».
+- **Contra generaciones anteriores del destino** (relanzado): cada hash que va a entrar en el MHL se compara con el primero que ya figura para esa ruta y formato en el historial de `DEST` (raíz o tarjeta). Distinto → fallo «hash distinto al de una generación anterior del destino»; si no, `ascmhl` escribiría `action="failed"` en una generación nueva (H9).
 - **Sin MHL** (solo con `--all` o sin «solo cámara»): `xxh64` de origen y de destino.
 - Un fichero que no figura en su MHL de origen es un fallo. Cualquier fallo impide escribir el MHL; se borra en destino lo afectado y se relanza.
 
 ## Formatos de hash
-- ASC MHL: `md5`, `sha1`, `xxh64`, `xxh128`, `xxh3` (xxh3_64).
+- ASC MHL: los de `ascmhl` 1.2 (`md5`, `sha1`, `xxh32`, `xxh64`, `xxh3` = xxh3_64, `xxh128`, `c4`), calculados con sus propios hashers.
 - MHL 1.x legacy: `xxhash64be`, `xxhash64`, `md5`, `sha1`, `xxhash` (XXH32).
 - El MHL del media management siempre lleva `xxh64` (`ROOT_HASH`).
 
@@ -77,3 +81,9 @@ Vienen de la primera versión del script, anterior al repo. No hay comando de re
 - **H3** — Un MHL en la raíz con historiales de tarjeta anidados escribe, según la spec, una generación nueva en cada tarjeta, que la raíz referencia; las generaciones del DIT quedan intactas.
 - **H4** — Rendimiento sobre SMB: nunca `stat` por frame al preparar. Una secuencia EXR de 13 056 frames colgaba la GUI de Resolve; de ahí `FS` (cada carpeta se lista una vez) y `expand` con un solo listado.
 - **H5** — Los procesos `fuscript` hijos de Resolve que mueren quedan zombis hasta reiniciar Resolve.
+
+## Hallazgos medidos (2026-10-01)
+- **H6** — Preparar 2 000 ficheros sueltos de una misma carpeta hacía 2 000 `os.stat` (un `os.path.isfile` por fichero en `expand`, versión `78473b7`); con `FS.ls` sobre `os.scandir` hace 0 `stat` por fichero. Quedan 41 `lstat` fijos de `os.path.ismount` en los ancestros de la carpeta (los mismos con 20 que con 2 000 ficheros). Medido sobre disco local con `os.stat`/`os.lstat` interceptados alrededor de `scan()`; reproducir: `git show 78473b7:mhl_mediamanagement.py > old.py` y contar las llamadas en `scan()` de 2 000 ficheros vacíos en una carpeta temporal; la regresión la cubre `uv run pytest tests/test_plan.py -k sin_stat`.
+- **H7** — La referencia compara hashes como cadenas exactas: una tarjeta cuyo MHL lleva un `md5` en mayúsculas (escrito con `append_file_hash(..., 'md5', md5.upper())` y `commit_session`) **no** pasa `ascmhl-debug verify` (rc 11, «Verification of files referenced in the ASC MHL history failed»). El script la trata igual. Reproducir: `uv run pytest tests/test_worker.py -k mayusculas` y `ascmhl-debug verify` sobre la tarjeta que crea.
+- **H8** — **Abierto (issue pendiente).** Copiar solo parte de una tarjeta ASC (1 de 3 clips) termina con rc 0 y MHL escrito, pero `ascmhl-debug verify DEST` falla (rc 10, «Files referenced in the ASC MHL history are missing») porque el historial del DIT copiado sigue referenciando los clips que no se copiaron. Reproducir: tarjeta `A001` de 3 clips con `ascmhl create -h xxh64`, lista con un solo clip, `--files lista --dest $T/dest` y `ascmhl-debug verify $T/dest`.
+- **H9** — En `ascmhl` 1.2, `MHLGenerationCreationSession.append_file_hash` devuelve `False` cuando el hash no coincide con el de una generación anterior y, si se commitea igualmente, escribe una generación con `action="failed"`. Por eso el script compara antes con el historial del destino y no commitea si algún `append_file_hash` devuelve `False`. Reproducir: `ascmhl create -h xxh64 $T/h9`, después `append_file_hash(..., 'xxh64', '0000000000000000')` + `commit_session` sobre el mismo historial → `False` y `0002_*.mhl` con `action="failed"`; la regresión la cubre `uv run pytest tests/test_worker.py -k relanzado`.
