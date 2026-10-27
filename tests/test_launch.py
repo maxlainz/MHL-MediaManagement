@@ -254,13 +254,14 @@ def test_un_solo_worker_por_destino(tmp_path, mp, work_dirs):
     dest = tmp_path / "dest"
     held = mp.dest_lock(dest)
     assert held is not None and mp.dest_lock(dest) is None  # #7: dos ventanas al mismo destino
+    assert mp.dest_lock(tmp_path / "dest" / "PROYECTO") is None  # mismo disco: también (P y P/PROYECTO)
     jp, sp = tmp_path / "job.json", tmp_path / "status.json"
     jp.write_text(json.dumps({"dest": str(dest), "dry_run": False, "items": [], "base": str(tmp_path),
                               "log": str(tmp_path / "w.log")}))
     assert mp.worker(str(jp), str(sp)) == 1
     assert json.loads(sp.read_text())["state"] == "failed" and not dest.exists()
     held.close()
-    assert mp.dest_lock(dest) is not None and mp.dest_lock(tmp_path / "otro") is not None
+    assert mp.dest_lock(dest) is not None
 
 
 def test_un_zombi_no_es_un_worker_vivo(tmp_path, mp):

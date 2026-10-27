@@ -1,32 +1,29 @@
 #!/usr/bin/env python3
 """
-MHL MediaManagement — media management de uno o varios timelines de DaVinci Resolve respetando el MHL de origen.
+MHL MediaManagement — media management de uno o varios timelines de DaVinci Resolve que respeta el MHL del DIT.
 
 Flujo:
-  1. GUI (Workspace > Scripts > MHL MediaManagement): eliges timelines, destino y «Qué copiar» (D16).
-     «Preparar» lee los timelines (sin duplicados) y muestra la vista previa. No crea ningún MHL.
-  2. Copia (en segundo plano, con progreso en la ventana): ficheros, conservando la estructura desde la raíz común; las tarjetas
-     con MHL de origen se copian con su MHL tal cual (carpeta ascmhl/ o .mhl legacy). «Clips del timeline» (tarjeta
-     parcial, avisada, D11); «Respetar historial MHL» copia todo lo que atestigua el MHL del DIT de cada tarjeta usada
-     (D19/D20: un MHL que cubre varias tarjetas y no todas usadas pide elegir); «Todo» añade los ficheros sin MHL.
-  3. Verificación (solo lectura): cada fichero de tarjeta contra su MHL de origen;
-     los ficheros sin MHL, origen contra destino.
-  4. Solo si TODO cuadra: un ASC MHL de todo el media management en la raíz del destino.
-     Según el spec ASC MHL, cada tarjeta con historial recibe una generación "verified"
-     que la raíz referencia; las generaciones del DIT no se tocan.
+  1. Ventana (Workspace › Scripts › MHL MediaManagement): timelines, destino y «Qué copiar». «Preparar» lee los
+     timelines (sin duplicados; también la media de compuestos, multicam y timelines anidados) y enseña la vista
+     previa. No crea ningún MHL.
+  2. Copia, en segundo plano: estructura desde la raíz común; cada tarjeta con su MHL de origen tal cual (carpeta
+     ascmhl/ o .mhl legacy). «Qué copiar»: solo los clips del timeline, todo lo que lista el MHL de cada tarjeta usada,
+     o eso más los ficheros sin MHL. Un MHL que cubre varias tarjetas y no todas usadas pide elegir.
+  3. Verificación (solo lectura): cada copia contra su MHL de origen; lo que no tiene MHL, origen contra destino.
+  4. Solo si todo cuadra: un ASC MHL (xxh64) de todo lo copiado en la raíz del destino. Cada tarjeta con historial
+     recibe una generación nueva que la raíz referencia; las generaciones del DIT no se tocan.
 
-Cámara = fichero dentro de una tarjeta con MHL de origen (ascmhl/ en algún ancestro, que gana, D12; o el .mhl más
-cercano que lo cita, D18).
+Tarjeta = carpeta con un ascmhl/ (manda, aunque haya un .mhl legacy más cerca) o con el .mhl legacy que cita el fichero.
 
-Sin GUI:
-  python3 "MHL MediaManagement.py" --files lista.txt --dest /Volumes/X [--scope clips|mhl|all] [--whole-mhl] [--dry-run]
-  python3 "MHL MediaManagement.py" --diag                  (diagnóstico del entorno)
-  python3 "MHL MediaManagement.py" --selftest [--keep]     (autotest: trabajo real sobre una tarjeta sintética)
-  python3 "MHL MediaManagement.py" --worker job.json      (lo usa la GUI)
+Sin ventana (con el Python que tiene ascmhl 1.2):
+  python3 mhl_mediamanagement.py --files lista.txt --dest /Volumes/X [--scope clips|mhl|all] [--whole-mhl] [--dry-run]
+  python3 mhl_mediamanagement.py --diag                  (diagnóstico del entorno)
+  python3 mhl_mediamanagement.py --selftest [--keep]     (autotest: trabajo real sobre una tarjeta sintética)
 
-Requisitos: Python ≥ 3.11 con ascmhl 1.2: pip3 install 'ascmhl==1.2' (trae xxhash). Ver install.sh.
+Requisitos: macOS, Python ≥ 3.11 con ascmhl 1.2: pip3 install 'ascmhl==1.2' (trae xxhash). Ver install.sh.
 """
 import datetime
+import filecmp
 import hashlib
 import json
 import locale
@@ -268,9 +265,7 @@ def expand(path, fs):
         ms = list(SEQ_RE.finditer(name))
         m = ms[-1] if ms else None
     if not m:
-        if real is None or names[real]:
-            return []
-        return [Path(d) / real] + sorted(Path(p) for p in siblings(d, real, fs))
+        return [Path(d) / real] if real is not None and not names[real] else []
     lo, hi = int(m.group(1)), int(m.group(2))
     rx = re.compile(re.escape(_nfc(name[:m.start()])) + r"(\d+)" + re.escape(_nfc(name[m.end():])) + r"$")
     out = []
@@ -282,6 +277,7 @@ def expand(path, fs):
 
 
 R3D_SEG = re.compile(r"(.+)_\d{3}$")
+SIDECAR_EXT = {".sidecar", ".rmd", ".xml"}  # D24: metadatos que la cámara o Resolve pueden reescribir tras el volcado
 
 
 def siblings(d, name, fs):
@@ -334,13 +330,21 @@ def otio_paths(o, out=None):
         s = o.get("OTIO_SCHEMA", "")
         if s.startswith("ExternalReference.") and o.get("target_url"):
             u = o["target_url"]
-            out.add(urllib.parse.unquote(urllib.parse.urlparse(u).path) if u.startswith("file://") else u)
+            if u.startswith("file://"):  # sin urlparse: un «#» o «?» del nombre no es fragmento ni query
+                u = urllib.parse.unquote(u[len("file://"):])
+                u = u[len("localhost"):] if u.startswith("localhost/") else u
+            out.add(u)
         elif s.startswith("ImageSequenceReference.") and o.get("target_url_base"):
             name = o.get("name") or ""
             if not SEQ_RE.search(name):
-                n = int((o.get("available_range") or {}).get("duration", {}).get("value", 1))
                 a, pad = int(o.get("start_frame", 0)), int(o.get("frame_zero_padding", 0))
-                b = a + (n - 1) * int(o.get("frame_step", 1))
+                dur = (o.get("available_range") or {}).get("duration")
+                if dur:  # la duración puede venir en otra base de tiempo que la secuencia
+                    n = round(float(dur.get("value", 1)) * float(o.get("rate") or dur.get("rate") or 1)
+                              / float(dur.get("rate") or o.get("rate") or 1))
+                    b = a + (max(n, 1) - 1) * int(o.get("frame_step", 1))
+                else:  # sin rango: todos los frames de la carpeta desde el primero (expand solo toma los que existen)
+                    b = 10 ** max(pad, 9) - 1
                 name = f"{o.get('name_prefix', '')}[{a:0{pad}d}-{b:0{pad}d}]{o.get('name_suffix', '')}"
             out.add(os.path.join(o["target_url_base"], name))
         for v in o.values():
@@ -390,7 +394,7 @@ def timeline_paths(tl, resolve=None):
     otio = timeline_otio(tl, resolve) if nested else None
     if otio is None:
         return paths, skipped + nested
-    return paths | otio, skipped
+    return paths | otio, skipped + (nested if otio <= paths else 0)  # un OTIO que no añade nada no tapa nada
 
 
 def scan(raw_paths, log=print):
@@ -402,9 +406,20 @@ def scan(raw_paths, log=print):
             missing.append(p)
             continue
         card, kind = fs.card_for(files[0].parent, files[0].name)  # los frames comparten carpeta (y .mhl)
-        for f in files:  # rutas reales del listado: NFC y NFD de un mismo fichero dan un solo item (D17)
-            if f not in seen:
-                seen.add(f)
+        sib = sorted(Path(x) for x in siblings(str(files[0].parent), files[0].name, fs)) if len(files) == 1 else []
+        att = fs.attested(card, kind) if card and sib else None
+        att = {_nfc(k).lower() for k in att} if att is not None else None
+        for f in files + sib:  # rutas reales del listado: NFC y NFD de un mismo fichero dan un solo item (D17)
+            if f in seen:
+                continue
+            seen.add(f)
+            if (f in sib and att is not None and f.suffix.lower() in SIDECAR_EXT
+                    and _nfc(os.path.relpath(str(f), str(card)).replace(os.sep, "/")).lower() not in att):
+                # D24: un fichero de metadatos hermano que el MHL del DIT no lista (sidecar escrito después del
+                # volcado) se copia como fichero sin MHL (origen contra destino), en cualquier «Qué copiar». La media
+                # hermana sin MHL (un _002.R3D que el DIT no hasheó) no: falla como «no figura»
+                items.append({"src": f, "card": None, "kind": "none", "group": p, "sibling": True})
+            else:
                 items.append({"src": f, "card": card, "kind": kind or "none", "group": p})
     return {"items": items, "missing": missing, "fs": fs}
 
@@ -501,7 +516,7 @@ def _expand_mhl(plan, items, fs, whole_mhl):
         for sub in sorted({os.path.dirname(p) for p in sel} | ({""} if sel is att else set())):
             d = fs.real_dir(os.path.join(str(card), sub) if sub else str(card))
             for n, is_dir in (fs.ls(d) or {}).items():
-                if is_dir or n in IGNORED or n.startswith("._") or (not sub and kind == "legacy"
+                if is_dir or Path(d) / n in have or n in IGNORED or n.startswith("._") or (not sub and kind == "legacy"
                                                                      and n.lower().endswith(".mhl")):
                     continue
                 if _nfc(os.path.join(sub, n).replace(os.sep, "/")) not in att_nfc:
@@ -518,8 +533,10 @@ def build_plan(scanned, scope="clips", whole_mhl=False):
         raise ValueError(f"scope desconocido: {scope}")
     fs = scanned.get("fs") or FS()
     camera_only = scope != "all"
-    excluded = [it for it in scanned["items"] if camera_only and it["kind"] == "none"]
-    items = [dict(it) for it in scanned["items"] if not (camera_only and it["kind"] == "none")]
+    def out(it):
+        return camera_only and it["kind"] == "none" and not it.get("sibling")
+    excluded = [it for it in scanned["items"] if out(it)]
+    items = [dict(it) for it in scanned["items"] if not out(it)]
     plan = {"base": None, "items": items, "excluded": excluded, "missing": list(scanned["missing"]), "collisions": [],
             "cards": {}, "scope": scope, "whole_mhl": bool(whole_mhl), "big_mhl": []}
     if not items:
@@ -776,7 +793,7 @@ def job_from_plan(plan, dest, dry_run, label=""):
         "dest": str(dest), "base": str(plan["base"]), "dry_run": dry_run, "label": label,
         "scope": plan.get("scope", "clips"), "whole_mhl": bool(plan.get("whole_mhl")), "cards": plan.get("cards", {}),
         "big_mhl": plan.get("big_mhl", []),
-        "items": [{"src": str(i["src"]), "rel": i["rel"], "kind": i["kind"],
+        "items": [{"src": str(i["src"]), "rel": i["rel"], "kind": i["kind"], "sibling": bool(i.get("sibling")),
                    "card": str(i["card"]) if i["card"] else None, "card_rel": i["card_rel"]} for i in plan["items"]],
     }
 
@@ -887,9 +904,22 @@ class Status:
             threading.Thread(target=beat, daemon=True).start()
 
 
+def no_cache(fh):
+    """macOS: lecturas y escrituras de fh sin pasar por la caché del sistema (F_NOCACHE). En otros sistemas, nada."""
+    if sys.platform == "darwin":
+        import fcntl
+        try:
+            fcntl.fcntl(fh.fileno(), fcntl.F_NOCACHE, 1)
+        except OSError:
+            pass
+
+
 def _read_into(path, hashers, on_bytes):
-    """Una sola lectura del fichero alimenta todos los hashers."""
+    """Una sola lectura del fichero alimenta todos los hashers, sin la caché del sistema (no_cache; copy_file también
+    escribe sin ella): la verificación tiene que leer el disco o el NAS, no la copia que quedó en RAM.
+    shortcut: medido en disco local (H18), no sobre SMB (#7); si la caché del cliente SMB lo ignora, hará falta otra vía."""
     with open(path, "rb") as fh:
+        no_cache(fh)
         for chunk in iter(lambda: fh.read(CHUNK), b""):
             for h in hashers:
                 h.update(chunk)
@@ -956,6 +986,25 @@ def nfc_match(rel, known, cache, key):
     return cache[key].get(_nfc(rel))
 
 
+def keep_mtime(st, dst):
+    """Fechas del origen en la copia, sin copystat: copystat copia también los flags de Finder (uchg, «bloqueado») y
+    una copia bloqueada no se puede renombrar ni borrar."""
+    os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
+def copy_tree_data(src, dst):
+    """copytree sin flags ni permisos de origen (ver keep_mtime): un ascmhl/ bloqueado en la tarjeta queda escribible."""
+    os.makedirs(dst)
+    with os.scandir(src) as it:
+        for e in it:
+            d = os.path.join(dst, e.name)
+            if e.is_dir(follow_symlinks=False):
+                copy_tree_data(e.path, d)
+            else:
+                shutil.copyfile(e.path, d)
+                keep_mtime(os.stat(e.path), d)
+
+
 def copy_file(src, dst, on_bytes=None):
     dst.parent.mkdir(parents=True, exist_ok=True)
     s = src.stat()
@@ -971,11 +1020,12 @@ def copy_file(src, dst, on_bytes=None):
     _CURRENT_TMP[0] = tmp
     try:
         with open(src, "rb") as fi, open(tmp, "wb") as fo:
+            no_cache(fo)  # si no, la verificación leería de la caché lo que se acaba de escribir (medido, H18)
             for chunk in iter(lambda: fi.read(CHUNK), b""):
                 fo.write(chunk)
                 if on_bytes:
                     on_bytes(len(chunk))
-        shutil.copystat(src, tmp)
+        keep_mtime(s, tmp)
         os.replace(tmp, dst)
     except BaseException:
         try:  # nunca queda un .mhlmm_part a medias en destino
@@ -1012,11 +1062,15 @@ def make_on_term(log, st, logf):
 
 
 def dest_lock(dest):
-    """#7: un solo worker por destino (dos ventanas, o ventana y CLI, a la vez). flock sobre un fichero de WORK_DIR, no
-    de DEST (allí sería un fichero más para ascmhl); el sistema lo suelta cuando el proceso muere. → fichero o None."""
+    """#7: un solo worker por disco de destino (dos ventanas, o ventana y CLI, a la vez; también P y P/PROYECTO). flock sobre un fichero de WORK_DIR, no de DEST (allí
+    sería un fichero más para ascmhl); el sistema lo suelta cuando el proceso muere. → fichero o None."""
     import fcntl
     WORK_DIR.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha1(os.path.realpath(str(dest)).encode()).hexdigest()[:16]
+    d = os.path.realpath(str(dest))
+    while not os.path.exists(d) and os.path.dirname(d) != d:  # el destino puede no existir aún
+        d = os.path.dirname(d)
+    # un volumen sin montar sube hasta /Volumes o /, que son el disco de arranque: entonces, por ruta
+    key = os.stat(d).st_dev if d not in ("/", "/Volumes") else hashlib.sha1(str(dest).encode()).hexdigest()[:16]
     fh = open(WORK_DIR / f"lock_{key}", "w")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1055,8 +1109,8 @@ def worker(job_path, status_path=None):
         return 1
     lock = dest_lock(dest)
     if lock is None:
-        log(f"✗ Otro trabajo está escribiendo ya en {dest}: espera a que termine. No se ha copiado nada.")
-        st.set(force=True, state="failed", msg="Otro trabajo usa este destino — no se ha copiado nada")
+        log(f"✗ Otro trabajo está escribiendo ya en el disco de {dest}: espera a que termine. No se ha copiado nada.")
+        st.set(force=True, state="failed", msg="Otro trabajo usa este disco de destino — no se ha copiado nada")
         logf.close()
         return 1
     st.heartbeat()
@@ -1135,11 +1189,21 @@ def _copy_ascmhl(src, dst, log, card_rel):
     if part.exists():
         shutil.rmtree(part)
         log(f"Borrada copia a medias de un intento anterior: {card_rel}/{part.name}/")
+    if not any(n.lower().endswith(".mhl") for n in os.listdir(src)):  # sin generaciones no hay nada que respetar
+        raise OSError(f"{card_rel}/ascmhl de origen no tiene ninguna generación .mhl (¿volcado a medias?)")
     if dst.exists():
+        # D25: el historial del destino tiene que contener, byte a byte, las generaciones del DIT (no cambian; el
+        # ascmhl_chain.xml sí crece con las nuestras). Si no, es de otra tarjeta con el mismo nombre o de un offload
+        # anterior: verificar contra él daría por buena media equivocada
+        bad = [n for n in sorted(os.listdir(src)) if n.lower().endswith(".mhl")
+               and not ((dst / n).is_file() and filecmp.cmp(src / n, dst / n, shallow=False))]
+        if bad:
+            raise OSError(f"{card_rel}/ascmhl del destino no es el historial de esta tarjeta (difiere en {bad[0]});"
+                          " no se mezcla: usa otro destino o revisa esa carpeta a mano")
         return
     _CURRENT_TMP[0] = part
     try:
-        shutil.copytree(src, part)
+        copy_tree_data(src, part)
         os.replace(part, dst)
     except BaseException:
         shutil.rmtree(part, ignore_errors=True)
@@ -1179,6 +1243,9 @@ def _work(job, dest, dry, log, st):
     notes = [n for rel, c in sorted((job.get("cards") or {}).items()) for n in card_notes(rel, c)]
     for n in notes:  # D16: lo que está en la tarjeta y no en el MHL del DIT no se copia
         log(f"  aviso: {n}")
+    for it in items:  # D24
+        if it.get("sibling"):
+            log(f"  aviso: {it['rel']} no figura en el MHL del DIT; se copia y se verifica origen contra destino")
     log("")
 
     if job.get("pause"):  # solo el autotest: tiempo en «running» para comprobar el reenganche
@@ -1421,7 +1488,8 @@ def check_worker_python(py):
     """None si `py` importa ascmhl y xxhash y su ascmhl es ASCMHL_VERSION; si no, el mensaje para la ventana."""
     code = "import ascmhl, xxhash, importlib.metadata as m; print(m.version('ascmhl'))"
     try:
-        r = subprocess.run([py, "-c", code], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+        r = subprocess.run([py, "-c", code], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
+                           env=worker_env())
     except Exception as e:
         return f"No puedo ejecutar el Python de ascmhl ({py}): {e}. {install_hint()}"
     if r.returncode != 0:
@@ -1726,6 +1794,7 @@ def selftest_start(log=print, pause=SELFTEST_PAUSE_S):
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(bytes((i * 31 + k * 7) % 256 for k in range(256)) * 256)  # 64 KB deterministas
         r = subprocess.run([exe, "create", "-h", "xxh64", str(card)], stdin=subprocess.DEVNULL, capture_output=True,
+                           env=worker_env(),
                            text=True, timeout=120)
         if r.returncode:
             _say(ctx, f"✗ ascmhl create: rc {r.returncode} · {((r.stderr or r.stdout).strip().splitlines() or [''])[-1]}")
@@ -1772,7 +1841,7 @@ def selftest_finish(ctx, state, msg, keep=False):
             _say(ctx, f"✗ ascmhl-debug: no está junto a {ctx['ascmhl']}")
         else:
             try:
-                r = subprocess.run([str(dbg), "verify", str(ctx["dest"])], stdin=subprocess.DEVNULL,
+                r = subprocess.run([str(dbg), "verify", str(ctx["dest"])], stdin=subprocess.DEVNULL, env=worker_env(),
                                    capture_output=True, text=True, timeout=120)
                 rc = r.returncode
                 _say(ctx, _ok(rc == 0, "ascmhl-debug verify DEST", f"rc {rc}"))
@@ -2239,18 +2308,28 @@ def gui(resolve, bmd):
 
 def cli(argv):
     import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--worker")
-    ap.add_argument("--status")
-    ap.add_argument("--files", type=Path)
-    ap.add_argument("--dest", type=Path)
+    ap = argparse.ArgumentParser(
+        prog="mhl_mediamanagement.py",
+        description="Copia una lista de ficheros de cámara a un destino, los verifica contra el MHL del DIT (ASC MHL o"
+                    " .mhl legacy) y, solo si todo cuadra, escribe un ASC MHL de lo copiado en DEST/ascmhl/.",
+        epilog="Ejemplo: python3 mhl_mediamanagement.py --files lista.txt --dest /Volumes/X/ENTREGA --scope mhl\n"
+               "Salida: 0 lo copiado está verificado y el MHL escrito (los «no encontrado» no se copian) · 1 fallo de copia o"
+               " verificación, o disco de destino ocupado · 2 uso incorrecto, nada que copiar o destino que pisaría el"
+               " origen · 130 cancelado.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--worker", help=argparse.SUPPRESS)  # interno: lo lanza la ventana
+    ap.add_argument("--status", help=argparse.SUPPRESS)
+    ap.add_argument("--files", type=Path, metavar="LISTA",
+                    help="fichero de texto con una ruta por línea (acepta secuencias clip.[0086400-0086500].exr)")
+    ap.add_argument("--dest", type=Path, metavar="DEST", help="carpeta de destino")
     ap.add_argument("--scope", choices=SCOPES, default="clips",
-                    help="qué copiar (D16): clips del timeline, todo lo que atestigua el MHL del DIT, o eso más lo que"
-                         " no tiene MHL")
-    ap.add_argument("--all", action="store_true", help="alias de --scope all")
+                    help="qué copiar: clips (solo los de la lista, por defecto), mhl (todo lo que lista el MHL de cada"
+                         " tarjeta usada) o all (mhl más los ficheros sin MHL)")
+    ap.add_argument("--all", action="store_true", help="lo mismo que --scope all")
     ap.add_argument("--whole-mhl", action="store_true",
-                    help="con --scope mhl/all, copiar todo un MHL que cubre varias tarjetas, no solo las carpetas usadas (D19, D20)")
-    ap.add_argument("--dry-run", action="store_true")
+                    help="con --scope mhl|all, si un MHL cubre varias tarjetas, copiarlo entero (sin esto, solo las"
+                         " carpetas usadas)")
+    ap.add_argument("--dry-run", action="store_true", help="enseñar qué se copiaría, sin copiar, verificar ni escribir MHL")
     ap.add_argument("--diag", action="store_true", help="diagnóstico del entorno (intérprete, ascmhl, carpetas)")
     ap.add_argument("--selftest", action="store_true", help="autotest: trabajo real sobre una tarjeta sintética")
     ap.add_argument("--keep", action="store_true", help="con --selftest, conservar la carpeta temporal")

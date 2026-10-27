@@ -18,7 +18,7 @@
 
 ## Medido
 - H6 (predicción cumplida: `listdir` = ancestros, `stat` = N): 2 000 sueltos → 9 listados / 2 000 `stat` antes; 0 `stat` después. Secuencia de 10 000 frames: 2 listados / 1 `stat`, 348 ms en local. Comandos en `docs/arquitectura.md`.
-- En Resolve 21.1 (lectura por MCP): `GetClipProperty("File Path")` de una secuencia EXR devuelve `nombre.[00086208-00099263].exr` (13 056 frames, cuadra con H4).
+- En Resolve 21.1 (lectura por MCP): `GetClipProperty("File Path")` de una secuencia EXR devuelve `nombre.[00000001-00013056].exr` (13 056 frames, cuadra con H4).
 
 ## Pendiente del owner
 - Issues #2 (tarjeta parcial no pasa `verify`: recomendación copiar la tarjeta entera), #3 (`.mhl` sobrante tapa `ascmhl/`), #4 (NFC/NFD), #5 (R3D por segmentos, compuestos), #6 (legacy en decimal), #7 (comprobaciones en Resolve y NAS).
