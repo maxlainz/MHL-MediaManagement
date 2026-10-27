@@ -248,3 +248,38 @@ def test_compute_dest(tmp_path, mp, monkeypatch):
     assert mp.compute_dest("~/real", False, "P") == real.resolve()
     assert mp.compute_dest(f"  {real}/  ", True, "P") == real.resolve() / "P"
     assert mp.compute_dest(str(tmp_path / "enlace"), True, "a/b") == real.resolve() / "a_b"
+
+
+def test_un_solo_worker_por_destino(tmp_path, mp, work_dirs):
+    dest = tmp_path / "dest"
+    held = mp.dest_lock(dest)
+    assert held is not None and mp.dest_lock(dest) is None  # #7: dos ventanas al mismo destino
+    jp, sp = tmp_path / "job.json", tmp_path / "status.json"
+    jp.write_text(json.dumps({"dest": str(dest), "dry_run": False, "items": [], "base": str(tmp_path),
+                              "log": str(tmp_path / "w.log")}))
+    assert mp.worker(str(jp), str(sp)) == 1
+    assert json.loads(sp.read_text())["state"] == "failed" and not dest.exists()
+    held.close()
+    assert mp.dest_lock(dest) is not None and mp.dest_lock(tmp_path / "otro") is not None
+
+
+def test_un_zombi_no_es_un_worker_vivo(tmp_path, mp):
+    # #7.4: un worker muerto sin recoger (zombi de Resolve) sigue «vivo» para kill(pid, 0); ps no muestra sus argumentos
+    sp = str(tmp_path / "status.json")
+    proc = subprocess.Popen([sys.executable, "-c", "pass", "--worker", "j", "--status", sp])
+    try:
+        for _ in range(100):
+            if subprocess.run(["ps", "-o", "stat=", "-p", str(proc.pid)], capture_output=True,
+                              text=True).stdout.strip().startswith("Z"):
+                break
+            time.sleep(0.05)
+        assert not mp.is_our_worker(proc.pid, sp)
+    finally:
+        proc.wait()
+
+
+def test_worker_env_sin_pythonhome(mp, monkeypatch):
+    monkeypatch.setenv("PYTHONHOME", "/Applications/X")
+    monkeypatch.setenv("PYTHONPATH", "/Applications/Y")
+    env = mp.worker_env()
+    assert "PYTHONHOME" not in env and "PYTHONPATH" not in env and env.get("PATH") == os.environ["PATH"]

@@ -39,6 +39,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -267,7 +268,9 @@ def expand(path, fs):
         ms = list(SEQ_RE.finditer(name))
         m = ms[-1] if ms else None
     if not m:
-        return [Path(d) / real] if real is not None and not names[real] else []
+        if real is None or names[real]:
+            return []
+        return [Path(d) / real] + sorted(Path(p) for p in siblings(d, real, fs))
     lo, hi = int(m.group(1)), int(m.group(2))
     rx = re.compile(re.escape(_nfc(name[:m.start()])) + r"(\d+)" + re.escape(_nfc(name[m.end():])) + r"$")
     out = []
@@ -276,6 +279,39 @@ def expand(path, fs):
         if mm and lo <= int(mm.group(1)) <= hi and not names[n]:
             out.append(Path(d) / n)
     return sorted(out)
+
+
+R3D_SEG = re.compile(r"(.+)_\d{3}$")
+
+
+def siblings(d, name, fs):
+    """D23 (#5): ficheros del mismo clip que File Path no da, con los listados de FS (sin stat): R3D partido
+    (_001.R3D → _NNN.R3D y .RMD), BRAW (.sidecar), P2 (CONTENTS/VIDEO/S.MXF → CONTENTS/*/S*) y XDCAM (S.MXF →
+    S + letra + 2 dígitos, p. ej. C0001M01.XML).
+    shortcut: reglas por nombre sin probar con media real de cada cámara; otro formato con hermanos necesita su regla."""
+    names = fs.ls(d) or {}
+    stem, ext = os.path.splitext(name)
+    ext = ext.lower()
+
+    def here(rx):
+        return [os.path.join(d, n) for n, is_dir in names.items() if n != name and not is_dir and rx.match(n)]
+    seg = R3D_SEG.match(stem)
+    if ext == ".r3d" and seg:
+        return here(re.compile(re.escape(seg.group(1)) + r"(_\d{3}\.r3d|\.rmd)$", re.I))
+    if ext == ".braw":
+        return here(re.compile(re.escape(stem) + r"\.sidecar$", re.I))
+    if ext != ".mxf":
+        return []
+    contents = os.path.dirname(d)
+    if os.path.basename(d).upper() == "VIDEO" and os.path.basename(contents).upper() == "CONTENTS":
+        out = []
+        for sub, is_dir in (fs.ls(contents) or {}).items():
+            if is_dir and sub.upper() != "VIDEO":
+                sd = os.path.join(contents, sub)
+                out += [os.path.join(sd, n) for n, nd in (fs.ls(sd) or {}).items()
+                        if not nd and n.upper().startswith(stem.upper())]
+        return out
+    return here(re.compile(re.escape(stem) + r"[A-Z]\d{2}\.\w+$", re.I))
 
 
 def list_timelines(project):
@@ -287,8 +323,59 @@ def list_timelines(project):
     return out
 
 
-def timeline_paths(tl):
-    paths, skipped = set(), 0
+NESTED_TYPES = {"Compound", "Multicam", "Timeline"}  # sin File Path; su media sale del OTIO (D22)
+
+
+def otio_paths(o, out=None):
+    """Rutas de media de un timeline exportado a OTIO (JSON), también dentro de clips compuestos, multicam (todos los
+    ángulos) y timelines anidados (D22, #5). Secuencias con el mismo «[inicio-fin]» que da File Path."""
+    out = set() if out is None else out
+    if isinstance(o, dict):
+        s = o.get("OTIO_SCHEMA", "")
+        if s.startswith("ExternalReference.") and o.get("target_url"):
+            u = o["target_url"]
+            out.add(urllib.parse.unquote(urllib.parse.urlparse(u).path) if u.startswith("file://") else u)
+        elif s.startswith("ImageSequenceReference.") and o.get("target_url_base"):
+            name = o.get("name") or ""
+            if not SEQ_RE.search(name):
+                n = int((o.get("available_range") or {}).get("duration", {}).get("value", 1))
+                a, pad = int(o.get("start_frame", 0)), int(o.get("frame_zero_padding", 0))
+                b = a + (n - 1) * int(o.get("frame_step", 1))
+                name = f"{o.get('name_prefix', '')}[{a:0{pad}d}-{b:0{pad}d}]{o.get('name_suffix', '')}"
+            out.add(os.path.join(o["target_url_base"], name))
+        for v in o.values():
+            otio_paths(v, out)
+    elif isinstance(o, list):
+        for v in o:
+            otio_paths(v, out)
+    return out
+
+
+def timeline_otio(tl, resolve):
+    """Rutas de otio_paths del timeline exportado a un temporal, o None si esta versión de Resolve no exporta OTIO."""
+    kind = getattr(resolve, "EXPORT_OTIO", None) if resolve is not None else None
+    if kind is None:
+        return None
+    fd, tmp = tempfile.mkstemp(suffix=".otio", prefix="mhlmm_")
+    os.close(fd)
+    try:
+        if not tl.Export(tmp, kind, resolve.EXPORT_NONE):
+            return None
+        with open(tmp, encoding="utf-8") as fh:
+            return otio_paths(json.load(fh))
+    except (OSError, ValueError):
+        return None
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def timeline_paths(tl, resolve=None):
+    """(rutas, items sin fichero). File Path de cada clip; los compuestos, multicam y timelines anidados no lo tienen
+    y su media se lee del OTIO del timeline (D22). Si no hay OTIO, cuentan como items sin fichero."""
+    paths, skipped, nested = set(), 0, 0
     for kind in ("video", "audio"):
         for i in range(1, int(tl.GetTrackCount(kind)) + 1):
             for item in tl.GetItemListInTrack(kind, i) or []:
@@ -296,9 +383,14 @@ def timeline_paths(tl):
                 fp = mpi.GetClipProperty("File Path") if mpi else ""
                 if fp:
                     paths.add(fp)
+                elif mpi and mpi.GetClipProperty("Type") in NESTED_TYPES:
+                    nested += 1
                 else:
                     skipped += 1
-    return paths, skipped
+    otio = timeline_otio(tl, resolve) if nested else None
+    if otio is None:
+        return paths, skipped + nested
+    return paths | otio, skipped
 
 
 def scan(raw_paths, log=print):
@@ -919,12 +1011,28 @@ def make_on_term(log, st, logf):
     return on_term
 
 
+def dest_lock(dest):
+    """#7: un solo worker por destino (dos ventanas, o ventana y CLI, a la vez). flock sobre un fichero de WORK_DIR, no
+    de DEST (allí sería un fichero más para ascmhl); el sistema lo suelta cuando el proceso muere. → fichero o None."""
+    import fcntl
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha1(os.path.realpath(str(dest)).encode()).hexdigest()[:16]
+    fh = open(WORK_DIR / f"lock_{key}", "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
 def worker(job_path, status_path=None):
     import signal
-    job = json.loads(Path(job_path).read_text())
+    job = json.loads(Path(job_path).read_text(encoding="utf-8"))
     dest, dry = Path(job["dest"]), job["dry_run"]
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logf = open(job.get("log") or LOG_DIR / f"mhl_mediamanagement_{time.strftime('%Y%m%d_%H%M%S')}.log", "w")
+    logf = open(job.get("log") or LOG_DIR / f"mhl_mediamanagement_{time.strftime('%Y%m%d_%H%M%S')}.log", "w",
+                encoding="utf-8")
     st = Status(status_path)
 
     def log(s=""):
@@ -943,6 +1051,12 @@ def worker(job_path, status_path=None):
         log(f"✗ El Python del worker ({sys.executable}) no puede importar ascmhl/xxhash: {e}\n"
             f"  Instala con: pip3 install 'ascmhl=={ASCMHL_VERSION}' con Python ≥ 3.11 (ver install.sh). No se ha copiado nada.")
         st.set(force=True, state="failed", msg="Falta ascmhl en el Python del worker (ver log)")
+        logf.close()
+        return 1
+    lock = dest_lock(dest)
+    if lock is None:
+        log(f"✗ Otro trabajo está escribiendo ya en {dest}: espera a que termine. No se ha copiado nada.")
+        st.set(force=True, state="failed", msg="Otro trabajo usa este destino — no se ha copiado nada")
         logf.close()
         return 1
     st.heartbeat()
@@ -1319,6 +1433,11 @@ def check_worker_python(py):
     return None
 
 
+def worker_env():
+    """Entorno del worker sin PYTHONHOME/PYTHONPATH: si Resolve los define, apuntarían a su Python, no al de ascmhl."""
+    return {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH")}
+
+
 def launch_worker(job):
     """Lanza el worker en segundo plano (sin Terminal) → ({pid, proc, status, log, stderr}, None) o (None, mensaje).
     Antes comprueba que el Python de ascmhl vale (check_worker_python): si no, no escribe ni lanza nada."""
@@ -1334,7 +1453,7 @@ def launch_worker(job):
             return None, why
         WORK_DIR.mkdir(parents=True, exist_ok=True)
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime('%Y%m%d_%H%M%S')
+        stamp = time.strftime('%Y%m%d_%H%M%S') + f"_{int(time.time() * 1000) % 1000:03d}"  # dos ventanas, mismo segundo
         jp = WORK_DIR / f"job_{stamp}.json"
         sp = WORK_DIR / f"status_{stamp}.json"
         ep = WORK_DIR / f"stderr_{stamp}.txt"
@@ -1344,7 +1463,7 @@ def launch_worker(job):
         with open(ep, "w") as err:  # el hijo hereda su copia; la del padre se cierra al salir del with
             p = subprocess.Popen([py, script, "--worker", str(jp), "--status", str(sp)],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
-                                 start_new_session=True, cwd=str(WORK_DIR))
+                                 start_new_session=True, cwd=str(WORK_DIR), env=worker_env())
         return {"pid": p.pid, "proc": p, "status": str(sp), "log": job["log"], "stderr": str(ep)}, None
     except Exception as e:
         return None, str(e)
@@ -1380,7 +1499,7 @@ def is_stale(d, now=None):
 
 def tail(path, n=20):
     try:
-        with open(path, errors="replace") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:  # el Python de Resolve prefiere US-ASCII (#7)
             return "\n".join(fh.read().splitlines()[-n:])
     except Exception:
         return ""
@@ -1510,7 +1629,7 @@ def diagnostics(resolve=None, fu=None, ui=None, ticks=None, home=None):
         out.append(f"PATH: {os.environ.get('PATH')}")
         for k in ("PYTHONHOME", "PYTHONPATH"):
             v = os.environ.get(k)
-            out.append(f"{k}: {v!r}" + ("  (lo hereda el worker)" if v else ""))
+            out.append(f"{k}: {v!r}" + ("  (no se pasa al worker)" if v else ""))
         out.append(f"TMPDIR: {os.environ.get('TMPDIR')!r} · tempfile: {tempfile.gettempdir()}")
         out.append(f"codificación: fs {sys.getfilesystemencoding()} · preferida {locale.getpreferredencoding(False)}")
 
@@ -1836,7 +1955,7 @@ def gui(resolve, bmd):
         paths, skipped, names = set(), 0, []
         for i in idxs:
             tl = project.GetTimelineByIndex(i)
-            p, s = timeline_paths(tl)
+            p, s = timeline_paths(tl, resolve)
             paths |= p; skipped += s; names.append(tl.GetName())
         t0 = time.time()
         state["scanned"] = scan(sorted(paths), log=lambda *_: None)
@@ -2074,10 +2193,6 @@ def gui(resolve, bmd):
         ticks.tick("disp.On.Timeout")
         poll(ev)
 
-    def poll_named(ev=None):
-        ticks.tick("disp.On.Poll.Timeout")
-        poll(ev)
-
     win.On.MHLMM.Close = close
     win.On.Close.Clicked = close
     win.On.Browse.Clicked = browse
@@ -2094,11 +2209,7 @@ def gui(resolve, bmd):
     win.On.Diag.Clicked = diag
     win.On.Selftest.Clicked = selftest_gui
     win.On.Dest.EditingFinished = logged("LineEdit.EditingFinished", "Dest", lambda ev: render())
-    disp.On.Timeout = poll_generic
-    try:
-        disp.On.Poll.Timeout = poll_named
-    except Exception as e:
-        glog(f"disp.On.Poll.Timeout no se puede registrar: {type(e).__name__}: {e}")
+    disp.On.Timeout = poll_generic  # #7: en Resolve 21.1.1 solo dispara el genérico, no disp.On.<ID>.Timeout
     glog(f"ui.Timer: {'creado' if timer else 'no disponible (solo Actualizar)'}")
 
     running = find_running_job()

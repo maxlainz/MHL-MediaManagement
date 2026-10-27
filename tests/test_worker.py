@@ -275,7 +275,7 @@ def test_legacy_con_nombre_nfc_y_disco_nfd(tmp_path, keeps_form, ascmhl_debug_cl
     assert v.returncode == 0, out(v)
 
 
-def test_verificacion_legacy_lee_el_mhl_una_vez_por_tarjeta(tmp_path, mp, monkeypatch):
+def test_verificacion_legacy_lee_el_mhl_una_vez_por_tarjeta(tmp_path, mp, monkeypatch, work_dirs):
     card = tmp_path / "src" / "B001"
     rows = []
     for i in range(30):
@@ -289,6 +289,5 @@ def test_verificacion_legacy_lee_el_mhl_una_vez_por_tarjeta(tmp_path, mp, monkey
     jp.write_text(json.dumps(mp.job_from_plan(plan, tmp_path / "dest", False, "t")))
     calls, orig = [0], mp.parse_legacy
     monkeypatch.setattr(mp, "parse_legacy", lambda p: (calls.__setitem__(0, calls[0] + 1), orig(p))[1])
-    monkeypatch.setattr(mp, "LOG_DIR", tmp_path / "logs")
     assert mp.worker(str(jp)) == 0
     assert calls[0] == 1  # antes, una vez por fichero (cuadrático en secuencias)

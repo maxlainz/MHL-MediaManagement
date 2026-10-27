@@ -123,5 +123,17 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - **Elección**: rechazar en `copy_file`: como la copia va a `.mhlmm_part` y se renombra, un fichero de otro tamaño nunca es una copia nuestra a medias. Es un error de copia («ya existe en destino con otro tamaño; no se sobrescribe»), bloquea el MHL y el log pide borrar a mano lo afectado. Mismo tamaño sigue siendo «ya existe» y la verificación decide. Autorizado por el owner («fix all»).
 - 2026-10-27.
 
+## D22 — La media de clips compuestos, multicam y timelines anidados se lee del OTIO del timeline
+- **Contexto**: #5, H14. No tienen `File Path` y la API no da sus clips internos (salvo el anidado); su media no se copiaba.
+- **Opciones**: recorrer `GetTimeline()` (solo vale para anidados); exportar el timeline a OTIO y leer sus referencias; avisar y no copiar.
+- **Elección**: OTIO, solo cuando el timeline tiene alguno de esos items (una exportación por timeline, a un temporal). En un multicam se copian **todos los ángulos**, también los que no salen en el corte: es lo que el multicam referencia y sin ellos no reconecta (elección del owner, 2026-10-27).
+- 2026-10-27.
+
+## D23 — Clips de varios ficheros: hermanos por regla de nombre
+- **Contexto**: #5. Si `File Path` da solo el primer fichero de un clip partido, «Clips del timeline» copiaba un clip incompleto con MHL «✓».
+- **Opciones**: hermanos por regla (recomendado); solo avisar; dejarlo a «Respetar historial MHL».
+- **Elección** del owner (2026-10-27): reglas por formato con el listado de la carpeta, sin `stat`: R3D `_001.R3D` → `_NNN.R3D` y `.RMD`; BRAW → `.sidecar`; P2 `CONTENTS/VIDEO/S.MXF` → `CONTENTS/*/S*`; XDCAM `S.MXF` → `S` + letra + 2 dígitos. Se copian y verifican como cualquier fichero de la tarjeta. Pendiente: comprobar con media real qué da `File Path` en cada formato (#7).
+- 2026-10-27.
+
 ## Pendiente de decidir (owner)
 - Si la nota de proyecto `MHL MediaManagement` entra en el vault de Obsidian (área `#archivo`) y cuándo.
