@@ -12,10 +12,9 @@ if [ -f scripts/leak-patterns.local.txt ]; then
   extra=$(grep -v '^\s*#' scripts/leak-patterns.local.txt | grep -v '^\s*$' | paste -sd'|' -)
   [ -n "$extra" ] && pat="$pat|$extra"
 fi
-files=$(git ls-files --cached --others --exclude-standard | grep -v -E '^(scripts/leak-check\.sh|scripts/leak-patterns\.local\.txt)$' || true)
-[ -n "$files" ] || { echo "leak-check: sin ficheros"; exit 0; }
-if echo "$files" | xargs grep -n -E -I "$pat" 2>/dev/null; then
+# git grep (no xargs grep): un fichero versionado borrado o una lista larga no convierten una fuga en «ok»
+if git grep -n -I -E --untracked "$pat" -- . ':!scripts/leak-check.sh' ':!scripts/leak-patterns.local.txt'; then
   echo "leak-check: FALLO — hay rutas, IPs o nombres privados en el árbol (ver arriba)." >&2
   exit 1
 fi
-echo "leak-check: ok ($(echo "$files" | wc -l | tr -d ' ') ficheros)"
+echo "leak-check: ok"

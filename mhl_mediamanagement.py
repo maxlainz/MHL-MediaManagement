@@ -777,10 +777,7 @@ class Status:
             now = time.time()
             if self.path and (force or now - self.t > 0.3):
                 self.d["updated"] = now  # la GUI da por muerto un «running» sin escribir en STALE_S
-                tmp = self.path + ".tmp"
-                with open(tmp, "w") as fh:
-                    json.dump(self.d, fh)
-                os.replace(tmp, self.path)
+                _write_status(self.path, self.d)
                 self.t = now
 
     def heartbeat(self, every=HEARTBEAT_S):
@@ -798,18 +795,23 @@ class Status:
             threading.Thread(target=beat, daemon=True).start()
 
 
-def hash_file(path, formats, on_bytes=None):
-    """Una sola lectura → {formato: hex}. Para MHL legacy y ficheros sin MHL; los formatos ASC van por hash_asc."""
-    import xxhash
-    makers = {"md5": hashlib.md5, "sha1": hashlib.sha1, "xxh64": xxhash.xxh64, "xxh128": xxhash.xxh128,
-              "xxh3": xxhash.xxh3_64, "xxhash64be": xxhash.xxh64, "xxhash64": xxhash.xxh64, "xxhash": xxhash.xxh32}
-    hs = {f: makers[f]() for f in set(formats) if f in makers}
+def _read_into(path, hashers, on_bytes):
+    """Una sola lectura del fichero alimenta todos los hashers."""
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(CHUNK), b""):
-            for h in hs.values():
+            for h in hashers:
                 h.update(chunk)
             if on_bytes:
                 on_bytes(len(chunk))
+
+
+def hash_file(path, formats, on_bytes=None):
+    """Una sola lectura → {formato: hex}. Para MHL legacy y ficheros sin MHL; los formatos ASC van por hash_asc."""
+    import xxhash
+    makers = {"md5": hashlib.md5, "sha1": hashlib.sha1, "xxh64": xxhash.xxh64,
+              "xxhash64be": xxhash.xxh64, "xxhash64": xxhash.xxh64, "xxhash": xxhash.xxh32}
+    hs = {f: makers[f]() for f in set(formats) if f in makers}
+    _read_into(path, hs.values(), on_bytes)
     return {f: h.hexdigest() for f, h in hs.items()}
 
 
@@ -823,12 +825,7 @@ def hash_asc(path, formats, on_bytes=None):
             hs[f] = new_hasher_for_hash_type(f)
         except (KeyError, ValueError):
             raise ValueError(f"formato de hash no soportado: {f}") from None
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(CHUNK), b""):
-            for h in hs.values():
-                h.update(chunk)
-            if on_bytes:
-                on_bytes(len(chunk))
+    _read_into(path, hs.values(), on_bytes)
     return {f: h.string_digest() for f, h in hs.items()}
 
 
@@ -843,11 +840,6 @@ def legacy_mhl_names(card):
 def legacy_read(card):
     """(entradas, errores) de los .mhl legacy de la carpeta de la tarjeta (ver read_legacy)."""
     return read_legacy(str(card), legacy_mhl_names(card))
-
-
-def legacy_hashes(card):
-    """{ruta relativa al .mhl: {"hashes", "size", "null"}} de los .mhl de la tarjeta (los ilegibles, fuera)."""
-    return legacy_read(card)[0]
 
 
 def legacy_match(algo, expected, got_hex):
@@ -875,7 +867,11 @@ def nfc_match(rel, known, cache, key):
 def copy_file(src, dst, on_bytes=None):
     dst.parent.mkdir(parents=True, exist_ok=True)
     s = src.stat()
-    if dst.exists() and dst.stat().st_size == s.st_size:
+    if dst.exists():
+        # D21: la copia va a .mhlmm_part y se renombra, así que un fichero de otro tamaño nunca es nuestro a medias:
+        # puede ser de una entrega anterior ya verificada y no se pisa
+        if dst.stat().st_size != s.st_size:
+            raise OSError(f"ya existe en destino con otro tamaño; no se sobrescribe: {dst}")
         if on_bytes:
             on_bytes(s.st_size)
         return False, s.st_size
@@ -1114,8 +1110,7 @@ def _work(job, dest, dry, log, st):
             elif kind == "legacy":
                 for name in legacy_mhl_names(card):
                     m = Path(card) / name
-                    if not (dcard / name).exists():
-                        shutil.copy2(m, dcard / name)
+                    if copy_file(m, dcard / name)[0]:  # atómico: un corte no deja un .mhl a medias
                         log(f"MHL copiado: {card_rel}/{name}")
                     legacy_mhls.append((m, dcard / name, f"{card_rel}/{name}"))
         except OSError as e:
@@ -1177,7 +1172,7 @@ def _work(job, dest, dry, log, st):
                 rec = {f: got[f] for f in fmts}
                 rec[ROOT_HASH] = got[ROOT_HASH]
             elif it["kind"] == "legacy":
-                ref = legacy_cache.setdefault(it["card"], legacy_read(it["card"]))[0]
+                ref = legacy_cache[it["card"]][0]  # leído una vez por tarjeta antes del bucle
                 key = Path(it["src"]).relative_to(it["card"]).as_posix()
                 if key not in ref:  # D17: el .mhl puede traer la ruta en la otra forma Unicode
                     key = nfc_match(key, lambda: ref, nfc_cache, ("legacy", it["card"])) or key
@@ -1907,8 +1902,9 @@ def gui(resolve, bmd):
             size = os.path.getsize(job["log"])
             if size != state["log_size"]:
                 state["log_size"] = size
-                with open(job["log"]) as fh:
-                    lines = fh.read().splitlines()
+                with open(job["log"], "rb") as fh:  # solo el final: el log crece con cada fichero copiado
+                    fh.seek(max(size - 65536, 0))
+                    lines = fh.read().decode("utf-8", "replace").splitlines()[1 if size > 65536 else 0:]
                 itm["Preview"].PlainText = "\n".join(lines[-400:])
         except OSError:
             pass

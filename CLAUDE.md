@@ -11,10 +11,10 @@ mhl_mediamanagement.py el script entero (GUI + worker + CLI); en Resolve, Worksp
 install.sh             copia o enlaza el script en Scripts/Utility de Resolve e instala ascmhl
 .claude/rules/         normas (una por archivo)        .claude/skills/   release · obsidian-vault
 .claude/settings.json  hooks: pull + issues al arrancar · bloqueo de rutas al escribir · bloqueo de commit en main · push al cerrar
-docs/decisiones.md     ADRs D1–Dn                      docs/bitacora/    una entrada por sesión (00 arranque · 01 renombrado y debug · 02 entrevista y alcance)
-docs/arquitectura.md   cómo está hecho el script; hallazgos H1–H11
+docs/decisiones.md     ADRs D1–Dn                      docs/bitacora/    una entrada por sesión (00 arranque · 01 renombrado y debug · 02 entrevista y alcance · 03 auditoría)
+docs/arquitectura.md   cómo está hecho el script; hallazgos H1–H12
 docs/contexto-estudio.md  qué exige el estudio, en genérico   docs/roadmap.md  versiones previstas
-tests/                 pytest (81): humo del modo CLI, plan, worker/conformidad, lanzamiento/reenganche, versión
+tests/                 pytest (138): humo del modo CLI, plan, worker/conformidad, lanzamiento/reenganche, versión
 .github/workflows/     ci.yml (push a main y PRs)      pyproject.toml · uv.lock · .python-version
 scripts/leak-check.sh  nada del estudio en el repo     scripts/leak-patterns.local.txt  patrones privados (gitignored)
 Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
@@ -48,8 +48,8 @@ Makefile · CHANGELOG.md · README.md · LICENSE (MIT)
 ## Docs
 | Archivo | Leer cuando… |
 |---|---|
-| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D20; pendientes del owner al final) |
-| `docs/arquitectura.md` | Vas a tocar cualquier función del script, el worker, el estado o los hashes; hallazgos H1–H11 |
+| `docs/decisiones.md` | Antes de tocar alcance, nombres, herramientas o workflow (D1–D21; pendientes del owner al final) |
+| `docs/arquitectura.md` | Vas a tocar cualquier función del script, el worker, el estado o los hashes; hallazgos H1–H12 |
 | `docs/contexto-estudio.md` | Necesitas saber qué exige el estudio del media management y del MHL |
 | `docs/roadmap.md` | Dudas de qué entra en cada versión |
 | `docs/bitacora/` | Quieres saber qué pasó en cada sesión |
@@ -73,7 +73,7 @@ Requisitos: `uv`, Python ≥ 3.11 (CI usa 3.12). Para la GUI: Resolve Studio y P
 ASC MHL Specification v1.0 (2022-03-15) e Implementation Guidelines v1.0 (2023-03-29), `ascmitc/mhl-specification` · `ascmhl` **1.2** (PyPI 2025-07-04, Python ≥ 3.11, MIT). Subir versión es decisión del owner.
 
 ## Estado y siguiente paso
-- **Estado (2026-10-01, bitácora 02)**: todo por PR con `main` protegida (D15). En `main`: renombrado (#1), correcciones de la revisión adversarial, tarjeta parcial y selector «Qué copiar» (D11, D16), ASC gana sobre legacy (D12), NFC/NFD (D17), MHL legacy 1.x completo (D18, H11), salvaguarda del MHL de varias tarjetas (D19, D20), diagnóstico + autotest + log de la ventana (#7). 137 tests. Sin tag.
+- **Estado (2026-10-27, bitácora 03)**: auditoría con arreglos (D21, H12, leak-check con `git grep`). Todo por PR con `main` protegida (D15). En `main`: renombrado (#1), correcciones de la revisión adversarial, tarjeta parcial y selector «Qué copiar» (D11, D16), ASC gana sobre legacy (D12), NFC/NFD (D17), MHL legacy 1.x completo (D18, H11), salvaguarda del MHL de varias tarjetas (D19, D20), diagnóstico + autotest + log de la ventana (#7). 138 tests. Sin tag.
 - **Después**: prueba del owner en Resolve (Diagnóstico → Autotest → trabajo real → cerrar y reabrir) → `v0.2.0` (skill `release`, por PR) → merge del PR de inglés (v0.3.0, D13) → v0.4.0 clips de varios ficheros (#5, tras #7) → v0.5.0 varios destinos (D14).
 
 ## Pendiente del owner (2026-10-01)

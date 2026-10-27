@@ -163,7 +163,7 @@ def test_legacy_mhl_en_mayusculas(tmp_path, mp):
     (card / "CARD.MHL").write_text('<hashlist version="1.1"><hash><file>CLIP/x.mov</file>'
                                   '<xxhash64be>abcdef</xxhash64be></hash></hashlist>')
     assert mp.FS().card_for(card / "CLIP") == (card, "legacy")
-    assert mp.legacy_hashes(card) == {"CLIP/x.mov": {"hashes": {"xxhash64be": "abcdef"}, "size": None, "null": False}}
+    assert mp.legacy_read(card)[0] == {"CLIP/x.mov": {"hashes": {"xxhash64be": "abcdef"}, "size": None, "null": False}}
 
 
 # ---------- D12: un ascmhl/ en cualquier ancestro gana sobre un .mhl legacy más cercano ----------

@@ -117,5 +117,11 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - **Elección**: criterio estructural. Un MHL es «de varias tarjetas» si al menos dos carpetas de primer nivel tienen más de `CARD_MIN_FILES` (20) ficheros atestiguados cada una y el timeline usa solo algunas; si no, la carpeta del MHL es una tarjeta y «Respetar historial MHL» copia todo lo que atestigua, sin aviso. En el caso de varias tarjetas, el aviso explica con cifras las dos salidas: «Copiar todo el MHL» (a efectos prácticos, el día entero) y «Solo las carpetas usadas» (tarjetas usadas enteras + el MHL del DIT tal cual; un verificador externo dirá que faltan las otras; el comentario del manifiesto lo deja escrito como «parcial: DIA_03 2/4 tarjetas»). Ninguna herramienta comercial (YoYotta Conform, Hedge OffShoot, Silverstack) documenta este caso, así que el texto tiene que explicarse solo.
 - 2026-10-01.
 
+## D21 — Un fichero que ya existe en destino con otro tamaño no se sobrescribe
+- **Contexto**: auditoría del 2026-10-27. `copy_file` sobrescribía en silencio un fichero de destino de otro tamaño; un segundo trabajo con una tarjeta del mismo nombre (`A001` de otro día) al mismo destino pisaba la entrega anterior ya verificada (su `ascmhl-debug verify` pasaba de rc 0 a rc 11) y luego fallaba sin escribir MHL.
+- **Opciones**: sobrescribir (antes); bloquear en `dest_conflict` mirando el historial del destino; rechazar en `copy_file`.
+- **Elección**: rechazar en `copy_file`: como la copia va a `.mhlmm_part` y se renombra, un fichero de otro tamaño nunca es una copia nuestra a medias. Es un error de copia («ya existe en destino con otro tamaño; no se sobrescribe»), bloquea el MHL y el log pide borrar a mano lo afectado. Mismo tamaño sigue siendo «ya existe» y la verificación decide. Autorizado por el owner («fix all»).
+- 2026-10-27.
+
 ## Pendiente de decidir (owner)
 - Si la nota de proyecto `MHL MediaManagement` entra en el vault de Obsidian (área `#archivo`) y cuándo.
