@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 import xxhash
@@ -291,3 +292,56 @@ def test_verificacion_legacy_lee_el_mhl_una_vez_por_tarjeta(tmp_path, mp, monkey
     monkeypatch.setattr(mp, "parse_legacy", lambda p: (calls.__setitem__(0, calls[0] + 1), orig(p))[1])
     assert mp.worker(str(jp)) == 0
     assert calls[0] == 1  # antes, una vez por fichero (cuadrático en secuencias)
+
+
+def test_tarjeta_homonima_en_destino_no_se_da_por_verificada(tmp_path, ascmhl_cli):
+    # D25: otra A001 (otro día) con un clip del mismo nombre y tamaño; antes se verificaba contra el ascmhl/ viejo
+    env = isolated_env(tmp_path)
+    clips = []
+    for day, seed in (("dia1", 1), ("dia2", 2)):
+        c = write_bin(tmp_path / day / "A001" / "CLIP" / "C0001.ari", seed=seed)
+        assert subprocess.run([ascmhl_cli, "create", "-h", "xxh64", str(c.parents[1])], capture_output=True,
+                              env=env).returncode == 0
+        clips.append(c)
+    dest = tmp_path / "dest"
+    assert run_pull(tmp_path, [clips[0]], dest).returncode == 0
+    before = (dest / "A001" / "CLIP" / "C0001.ari").read_bytes()
+    r = run_pull(tmp_path, [clips[1]], dest)
+    assert r.returncode == 1, out(r)
+    assert "no es el historial de esta tarjeta" in out(r)
+    assert (dest / "A001" / "CLIP" / "C0001.ari").read_bytes() == before
+    assert len(mhl_files(dest / "ascmhl")) == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "chflags"), reason="flags de Finder solo en macOS/BSD")
+def test_fichero_bloqueado_en_finder_se_copia_sin_el_bloqueo(tmp_path, mp):
+    import stat
+    src = write_bin(tmp_path / "a.mov", seed=1)
+    os.chflags(src, stat.UF_IMMUTABLE)
+    try:
+        dst = tmp_path / "dest" / "a.mov"
+        assert mp.copy_file(src, dst)[0]
+        assert not dst.stat().st_flags & stat.UF_IMMUTABLE
+        assert dst.stat().st_mtime_ns == src.stat().st_mtime_ns and not list(dst.parent.glob("*.mhlmm_part"))
+    finally:
+        os.chflags(src, 0)
+
+
+def test_check_worker_python_no_hereda_pythonhome(mp, monkeypatch):
+    monkeypatch.setenv("PYTHONHOME", "/no/existe")  # p. ej. el de Resolve
+    assert mp.check_worker_python(sys.executable) is None
+
+
+def test_ascmhl_de_origen_sin_generaciones_no_se_da_por_verificado(tmp_path, ascmhl_cli):
+    # D25: un ascmhl/ vacío (volcado a medias) no puede servir para verificar contra el de otra A001 del destino
+    env = isolated_env(tmp_path)
+    c1 = write_bin(tmp_path / "dia1" / "A001" / "CLIP" / "C0001.ari", seed=1)
+    assert subprocess.run([ascmhl_cli, "create", "-h", "xxh64", str(c1.parents[1])], env=env,
+                          capture_output=True).returncode == 0
+    c2 = write_bin(tmp_path / "dia2" / "A001" / "CLIP" / "C0001.ari", seed=2)
+    (tmp_path / "dia2" / "A001" / "ascmhl").mkdir()
+    dest = tmp_path / "dest"
+    assert run_pull(tmp_path, [c1], dest).returncode == 0
+    r = run_pull(tmp_path, [c2], dest)
+    assert r.returncode == 1 and "ninguna generación" in out(r), out(r)
+    assert len(mhl_files(dest / "ascmhl")) == 1

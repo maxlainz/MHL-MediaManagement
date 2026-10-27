@@ -88,7 +88,7 @@ def test_hermanos_r3d_braw_p2_xdcam(mp, tmp_path):
        "XD/Clip/C0001.MXF", "XD/Clip/C0001M01.XML", "XD/Clip/C0002.MXF", "M/a.mov", "M/a.wav")
 
     def names(rel):
-        return sorted(p.relative_to(tmp_path).as_posix() for p in mp.expand(str(tmp_path / rel), mp.FS()))
+        return sorted(it["src"].relative_to(tmp_path).as_posix() for it in mp.scan([str(tmp_path / rel)], log=print)["items"])
     assert names("RDC/A001_C001_001.R3D") == ["RDC/A001_C001.RMD", "RDC/A001_C001_001.R3D", "RDC/A001_C001_002.R3D"]
     assert names("B/clip.braw") == ["B/clip.braw", "B/clip.sidecar"]
     assert names("P2/CONTENTS/VIDEO/0001AB.MXF") == ["P2/CONTENTS/AUDIO/0001AB00.MXF", "P2/CONTENTS/AUDIO/0001AB01.MXF",
@@ -110,3 +110,46 @@ def test_r3d_partido_se_copia_entero_y_verifica(tmp_path, ascmhl_cli, ascmhl_deb
         "A001_C001.RMD", "A001_C001_001.R3D", "A001_C001_002.R3D", "A001_C001_003.R3D"]
     v = subprocess.run([ascmhl_debug_cli, "verify", str(dest)], capture_output=True, text=True, env=env)
     assert v.returncode == 0, out(v)
+
+
+def test_sidecar_que_el_mhl_no_lista_se_copia_como_sin_mhl(tmp_path, ascmhl_cli, ascmhl_debug_cli):
+    # D24: Resolve escribió el .sidecar después del offload; antes bloqueaba el MHL en cada intento
+    card = tmp_path / "src" / "A002"
+    clip = write_bin(card / "A002_C001.braw", seed=1)
+    env = isolated_env(tmp_path)
+    assert subprocess.run([ascmhl_cli, "create", "-h", "xxh64", str(card)], capture_output=True, env=env).returncode == 0
+    write_bin(card / "A002_C001.sidecar", seed=2, size=64)
+    dest = tmp_path / "dest"
+    r = run_pull(tmp_path, [clip], dest)  # «Clips del timeline»
+    assert r.returncode == 0, out(r)
+    assert "A002/A002_C001.sidecar no figura en el MHL del DIT; se copia" in out(r)
+    assert (dest / "A002" / "A002_C001.sidecar").is_file()
+    v = subprocess.run([ascmhl_debug_cli, "verify", str(dest)], capture_output=True, text=True, env=env)
+    assert v.returncode == 0, out(v)
+
+
+def test_otio_que_no_anade_nada_no_tapa_los_compuestos(mp):
+    tl = TL([Item("/Volumes/X/fuera.mov"), Item("", "Compound")], ext("/Volumes/X/fuera.mov"))
+    assert mp.timeline_paths(tl, Resolve()) == ({"/Volumes/X/fuera.mov"}, 1)
+
+
+def test_otio_secuencia_sin_rango_o_en_otra_base_y_url_con_almohadilla(mp):
+    def seq(**kw):
+        return {"OTIO_SCHEMA": "ImageSequenceReference.1", "name": "x", "target_url_base": "/Volumes/X/s",
+                "name_prefix": "sh.", "name_suffix": ".exr", "start_frame": 1001, "frame_zero_padding": 4, **kw}
+    assert mp.otio_paths(seq()) == {"/Volumes/X/s/sh.[1001-999999999].exr"}  # sin rango: todo lo que exista
+    assert mp.otio_paths(seq(rate=24.0, available_range={"duration": {"value": 200.0, "rate": 48.0}})) == {
+        "/Volumes/X/s/sh.[1001-1100].exr"}
+    assert mp.otio_paths(ext("file:///Volumes/X/take%232.mov")) == {"/Volumes/X/take#2.mov"}
+    assert mp.otio_paths(ext("file://localhost/Volumes/X/a#b.mov")) == {"/Volumes/X/a#b.mov"}
+
+
+def test_segmento_r3d_que_el_dit_no_hasheo_falla(tmp_path, ascmhl_cli):
+    # D24 solo vale para metadatos: media hermana sin MHL no se certifica
+    card = tmp_path / "src" / "A001"
+    s1 = write_bin(card / "A001_C001.RDC" / "A001_C001_001.R3D", seed=1)
+    env = isolated_env(tmp_path)
+    assert subprocess.run([ascmhl_cli, "create", "-h", "xxh64", str(card)], env=env, capture_output=True).returncode == 0
+    write_bin(card / "A001_C001.RDC" / "A001_C001_002.R3D", seed=2)
+    r = run_pull(tmp_path, [s1], tmp_path / "dest")
+    assert r.returncode == 1 and "A001_C001_002.R3D: no figura en el MHL de origen" in out(r), out(r)

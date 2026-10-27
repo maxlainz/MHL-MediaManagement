@@ -26,7 +26,7 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - 2026-10-01.
 
 ## D5 — Nada del estudio entra en el repo
-- **Contexto**: el script se usa en un estudio real; el repo es público (D3).
+- **Contexto**: el script se usa en producción real; el repo es público (D3).
 - **Elección**: ni el nombre del estudio, ni clientes, ni rutas reales, ni IPs. El contexto se resume en términos genéricos en `docs/contexto-estudio.md`. El nombre del estudio vive solo en `scripts/leak-patterns.local.txt` (gitignored). El único volumen permitido como ejemplo es el marcador `/Volumes/X`. Prohibido en cualquier fichero versionado: rutas absolutas de usuario (siempre `~`), volúmenes con otro nombre, IPs privadas y el nombre del estudio. Lo comprueba `make leak-check` (`scripts/leak-check.sh`).
 - 2026-10-01.
 
@@ -36,6 +36,7 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - 2026-10-01.
 
 ## D7 — Git y versiones
+- **Nota (2026-10-27)**: `v0.1.0` no se llegó a taggear; la primera versión publicada será `v0.2.0` (ver `docs/roadmap.md`).
 - **Elección**: Conventional Commits en inglés con scope; SemVer; Keep a Changelog en español; sin trailers de atribución (`includeCoAuthoredBy: false`); pull al abrir y push al cerrar por hooks. Primera versión = `v0.1.0`, que se taggea cuando la CI esté verde (no en el arranque).
 - 2026-10-01. **Matizada por D15**: ya no se commitea en `main`.
 
@@ -77,7 +78,7 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
   - **v0.4.0 — clips de varios ficheros** (#5): R3D por segmentos, P2/XDCAM, sidecars de BRAW/Canon, clips compuestos/multicam. Primero la comprobación en Resolve de qué devuelve `File Path`.
   - **v0.5.0 — varios destinos**: leer el origen una vez y escribir a N discos a la vez (como Hedge/Silverstack); verificación y ASC MHL por destino.
 - 2026-10-01.
-
+- **Parcialmente sustituida por D22 y D23 (2026-10-27)**: compuestos/multicam/anidados y los hermanos R3D/BRAW/P2/XDCAM se adelantaron a v0.2.0; v0.4.0 queda con la comprobación con media real (#7) y los ficheros auxiliares de Canon.
 ## D14 — Varios destinos: una lectura, N escrituras
 - **Contexto**: D13. Alternativas: destinos en secuencia (el doble de lecturas de red) o decidir tras medir en el NAS.
 - **Elección**: cada fichero se lee del origen una vez y se escribe a todos los destinos a la vez; cada destino tiene su verificación y su `ascmhl/`. Detalle de diseño (hilos, tamaño de bloque, qué pasa si falla un disco) en su propio `Dn` cuando se implemente.
@@ -120,7 +121,7 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 ## D21 — Un fichero que ya existe en destino con otro tamaño no se sobrescribe
 - **Contexto**: auditoría del 2026-10-27. `copy_file` sobrescribía en silencio un fichero de destino de otro tamaño; un segundo trabajo con una tarjeta del mismo nombre (`A001` de otro día) al mismo destino pisaba la entrega anterior ya verificada (su `ascmhl-debug verify` pasaba de rc 0 a rc 11) y luego fallaba sin escribir MHL.
 - **Opciones**: sobrescribir (antes); bloquear en `dest_conflict` mirando el historial del destino; rechazar en `copy_file`.
-- **Elección**: rechazar en `copy_file`: como la copia va a `.mhlmm_part` y se renombra, un fichero de otro tamaño nunca es una copia nuestra a medias. Es un error de copia («ya existe en destino con otro tamaño; no se sobrescribe»), bloquea el MHL y el log pide borrar a mano lo afectado. Mismo tamaño sigue siendo «ya existe» y la verificación decide. Autorizado por el owner («fix all»).
+- **Elección**: rechazar en `copy_file`: como la copia va a `.mhlmm_part` y se renombra, un fichero de otro tamaño nunca es una copia nuestra a medias. Es un error de copia («ya existe en destino con otro tamaño; no se sobrescribe»), bloquea el MHL y el log pide borrar a mano lo afectado. Mismo tamaño sigue siendo «ya existe» y la verificación decide.
 - 2026-10-27.
 
 ## D22 — La media de clips compuestos, multicam y timelines anidados se lee del OTIO del timeline
@@ -133,6 +134,17 @@ Una entrada por decisión: contexto, opciones, elección, fecha. Nunca se borra 
 - **Contexto**: #5. Si `File Path` da solo el primer fichero de un clip partido, «Clips del timeline» copiaba un clip incompleto con MHL «✓».
 - **Opciones**: hermanos por regla (recomendado); solo avisar; dejarlo a «Respetar historial MHL».
 - **Elección** del owner (2026-10-27): reglas por formato con el listado de la carpeta, sin `stat`: R3D `_001.R3D` → `_NNN.R3D` y `.RMD`; BRAW → `.sidecar`; P2 `CONTENTS/VIDEO/S.MXF` → `CONTENTS/*/S*`; XDCAM `S.MXF` → `S` + letra + 2 dígitos. Se copian y verifican como cualquier fichero de la tarjeta. Pendiente: comprobar con media real qué da `File Path` en cada formato (#7).
+- 2026-10-27.
+
+## D24 — Un hermano que el MHL del DIT no lista se copia como fichero sin MHL
+- **Contexto**: revisión adversarial del 2026-10-27. Con D23, un `.sidecar` de BRAW (o un `.RMD`) escrito por Resolve después del volcado no figura en el MHL del DIT y bloqueaba el MHL en cada intento, sin arreglo posible borrando y relanzando.
+- **Opciones**: no copiarlo y avisar (como lo no atestiguado en D16); copiarlo como fichero sin MHL.
+- **Elección** del owner: se copia en cualquier «Qué copiar» y se verifica origen contra destino con xxh64; entra en el MHL nuevo y el log lo avisa. Si figura en el MHL pero cambió, sigue siendo un fallo: no se puede certificar. **Solo metadatos** (`.sidecar`, `.rmd`, `.xml`, comparando sin mayúsculas): media hermana que el DIT no hasheó (un `_002.R3D`) es un fallo «no figura», porque certificarla rompería la cadena de custodia (revisión adversarial, 2026-10-27).
+- 2026-10-27.
+
+## D25 — Un `ascmhl/` en destino que no contiene el historial del DIT bloquea la copia
+- **Contexto**: H16. Con un `DEST/A001/ascmhl/` de una entrega anterior de otra tarjeta llamada igual, el historial del DIT no se copiaba y los ficheros del mismo nombre y tamaño se verificaban contra el historial viejo: MHL nuevo «verificado» con los bytes de la otra tarjeta.
+- **Elección**: un `ascmhl/` de origen sin ninguna generación `.mhl` es un error de copia. Si `DEST/<tarjeta>/ascmhl/` ya existe, cada generación `.mhl` del DIT tiene que estar en él byte a byte (las generaciones no cambian; el `ascmhl_chain.xml` sí crece). Si no, error de copia con su motivo y sin MHL. Cubre también un DIT que añadió generaciones después de la primera entrega.
 - 2026-10-27.
 
 ## Pendiente de decidir (owner)
