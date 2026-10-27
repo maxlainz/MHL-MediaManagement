@@ -14,6 +14,8 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado
 - Un ASC MHL en cualquier ancestro gana sobre un `.mhl` legacy más cercano (D12, #3).
 
 ### Corregido
+- Clips compuestos, multicam (todos los ángulos) y timelines anidados: su media se lee del OTIO del timeline y se copia (D22, H14; antes no se copiaba). Clips de varios ficheros: R3D partido (`_NNN.R3D` + `.RMD`), BRAW (`.sidecar`), P2 y XDCAM entran enteros aunque Resolve dé solo un fichero (D23, #5).
+- Un solo worker por destino: dos ventanas, o ventana y CLI, hacia el mismo destino ya no escriben a la vez (#7); el `<stamp>` de job/status lleva milisegundos; el worker no hereda `PYTHONHOME`/`PYTHONPATH`; log y job del worker en UTF-8 explícito (el Python de Resolve prefiere US-ASCII, H13); el temporizador se registra solo en `disp.On.Timeout`, el único que dispara en Resolve 21.1.1.
 - Auditoría (bitácora 03): un fichero que ya existe en destino con otro tamaño ya no se sobrescribe (D21; antes una tarjeta homónima podía pisar una entrega verificada); la verificación legacy lee el `.mhl` una vez por tarjeta, no una por fichero (H12: 2 000 ficheros, de 12,2 s a 0,6 s); los `.mhl` legacy se copian de forma atómica; `make leak-check` usa `git grep` (antes daba «ok» con una fuga si había un fichero versionado borrado); la ventana lee solo los últimos 64 KB del log.
 - MHL legacy 1.x (D18, #6): `<xxhash>` (XXH32) se compara como entero decimal (antes una tarjeta con solo XXH32 fallaba siempre, H11); `<xxhash64>` con bytes invertidos y `<xxhash64be>`; se verifican todos los hashes de la entrada; `<size>` distinto es fallo; `<null>` verifica origen contra destino; un `.mhl` ilegible da un error legible y bloquea el MHL; el `.mhl` puede estar en cualquier carpeta por encima de la tarjeta (rutas relativas a él, `/` o `\`).
 - Nombres con acentos (D17, #4): se usa el nombre real del disco, se deduplican NFC/NFD y la verificación contra el MHL del DIT busca las dos formas (H10).
@@ -26,11 +28,14 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado
 - Renombrado completo del script (issue #1, D9): `mhl_pull.py` → `mhl_mediamanagement.py`; en Resolve, Workspace › Scripts › «MHL MediaManagement» (`install.sh` retira la entrada antigua); estado en `~/Library/Application Support/mhl_mediamanagement/`, logs en `~/Library/Logs/mhl_mediamanagement/`; sufijo de copia parcial `.mhlmm_part`. Las carpetas antiguas `mhl_pull` no se migran.
 - ruff sin `ignore`: corregidos `F401` (`shlex`) y `F841` (`fd`) (cierra D8).
 
+### Medido
+- H13–H15 en Resolve 21.1.1 con el MCP de Resolve: evento del temporizador, US-ASCII en el Python de Resolve, compuestos/multicam sin `File Path`, `File Path` en NFC sobre APFS.
+
 ### Eliminado
 - `legacy_hashes` (solo lo usaba un test) y los formatos `xxh128`/`xxh3` de `hash_file`, que nunca se pedían.
 
 ### Decidido
-- D21 (no sobrescribir en destino un fichero de otro tamaño). D9 confirmada por el owner; D11 (tarjeta parcial: clips + `ascmhl/` del DIT tal cual + aviso; casilla «Tarjeta completa»); D12 (ASC MHL gana sobre un `.mhl` legacy más cercano); D13 (roadmap: v0.3.0 inglés, v0.4.0 clips de varios ficheros, v0.5.0 varios destinos); D14 (varios destinos: una lectura, N escrituras); D15 (nunca en `main`: ramas, PR obligatorio con CI verde, `main` protegida en GitHub); D16 (selector «Qué copiar» de tres opciones; «Respetar historial MHL» = lo que atestigua el MHL del DIT); D17 (NFC/NFD); D18 (MHL legacy: XXH32 decimal, `<null>`, `<size>`, `.mhl` en ancestros); D19 (aviso con dos salidas cuando el MHL cubre más que las tarjetas usadas); D20 (solo si cubre varias tarjetas).
+- D21 (no sobrescribir en destino un fichero de otro tamaño); D22 (compuestos, multicam y anidados por OTIO, todos los ángulos); D23 (hermanos por regla de nombre). D9 confirmada por el owner; D11 (tarjeta parcial: clips + `ascmhl/` del DIT tal cual + aviso; casilla «Tarjeta completa»); D12 (ASC MHL gana sobre un `.mhl` legacy más cercano); D13 (roadmap: v0.3.0 inglés, v0.4.0 clips de varios ficheros, v0.5.0 varios destinos); D14 (varios destinos: una lectura, N escrituras); D15 (nunca en `main`: ramas, PR obligatorio con CI verde, `main` protegida en GitHub); D16 (selector «Qué copiar» de tres opciones; «Respetar historial MHL» = lo que atestigua el MHL del DIT); D17 (NFC/NFD); D18 (MHL legacy: XXH32 decimal, `<null>`, `<size>`, `.mhl` en ancestros); D19 (aviso con dos salidas cuando el MHL cubre más que las tarjetas usadas); D20 (solo si cubre varias tarjetas).
 
 ### Añadido (v0.1.0)
 - Primera versión del script (`mhl_pull.py`, en Resolve «MHL Pull»):
