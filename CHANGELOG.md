@@ -25,6 +25,7 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Versionado
 - Worker: hashes de formato ASC con los hashers de `ascmhl` (c4 incluido; formato desconocido = fallo del fichero) y comparación exacta como la referencia (H7); cada hash se compara con las generaciones anteriores del destino y se respeta el resultado de `append_file_hash`, así que nunca se escribe un manifiesto con `action="failed"` (H9); los `.mhl` legacy copiados entran en el MHL raíz; SIGTERM durante el commit se difiere y un commit fallido lista las generaciones huérfanas; `copy_file` borra su temporal ante cualquier excepción.
 
 ### Cambiado
+- README al día: compuestos/multicam/anidados, clips de varios ficheros, no sobrescribir en destino, un trabajo por destino, requisitos con `ascmhl==1.2` y Resolve 21.1.1.
 - Renombrado completo del script (issue #1, D9): `mhl_pull.py` → `mhl_mediamanagement.py`; en Resolve, Workspace › Scripts › «MHL MediaManagement» (`install.sh` retira la entrada antigua); estado en `~/Library/Application Support/mhl_mediamanagement/`, logs en `~/Library/Logs/mhl_mediamanagement/`; sufijo de copia parcial `.mhlmm_part`. Las carpetas antiguas `mhl_pull` no se migran.
 - ruff sin `ignore`: corregidos `F401` (`shlex`) y `F841` (`fd`) (cierra D8).
 

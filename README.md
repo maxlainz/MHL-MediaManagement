@@ -2,14 +2,16 @@
 
 Media management para **DaVinci Resolve** que respeta el **MHL de origen** (el del DIT) y deja un **ASC MHL** de todo lo copiado.
 
-**TL;DR.** Estado: **v0.2.0 pendiente de tag** (renombrado completo, issue #1). El script es `mhl_mediamanagement.py` y en Resolve aparece como **«MHL MediaManagement»**; estado en `~/Library/Application Support/mhl_mediamanagement/` y logs en `~/Library/Logs/mhl_mediamanagement/` (las carpetas antiguas `mhl_pull` no se migran). Ver `CHANGELOG.md`, `docs/roadmap.md` y, para trabajar en el repo, `CLAUDE.md`.
+**TL;DR.** Estado: **v0.2.0 pendiente de tag**: falta la prueba del owner en Resolve con un trabajo real (#1, #7) y las medidas en el NAS (#4). El autotest ya pasa lanzado desde el Python de Resolve 21.1.1. El script es `mhl_mediamanagement.py` y en Resolve aparece como **«MHL MediaManagement»**; estado en `~/Library/Application Support/mhl_mediamanagement/` y logs en `~/Library/Logs/mhl_mediamanagement/` (las carpetas antiguas `mhl_pull` no se migran). Ver `CHANGELOG.md`, `docs/roadmap.md` y, para trabajar en el repo, `CLAUDE.md`.
 
 Se lanza desde Resolve: **Workspace › Scripts › MHL MediaManagement**.
 
 ## Flujo
 
 1. **Preparar** — eliges uno o varios timelines del proyecto (sin duplicados, también entre secuencias solapadas), destino, **«Qué copiar»** y *subcarpeta con el nombre del proyecto*. Vista previa por tarjeta, con cuántos ficheros de cada una se copian. No crea ningún MHL.
-2. **Copiar** — en segundo plano, con progreso en la ventana. Conserva la estructura desde la raíz común (las tarjetas nunca se parten ni renombran; con varios discos, `/Volumes/X/…` → `DEST/X/…`). Las tarjetas con MHL se copian con su MHL tal cual (`ascmhl/` o `.mhl` legacy).
+   - **Compuestos, multicam y timelines anidados** no tienen ruta de fichero en Resolve: su media se saca del timeline exportado a OTIO (un temporal que se borra), con **todos los ángulos** de cada multicam (D22).
+   - **Clips de varios ficheros**: aunque Resolve dé solo uno, entran todos los del clip: segmentos `_NNN.R3D` y `.RMD` de RED, `.sidecar` de BRAW, audio y XML de P2 (`CONTENTS/…`) y de XDCAM (D23). Son reglas por nombre, sin probar aún con tarjetas reales.
+2. **Copiar** — en segundo plano, con progreso en la ventana. Conserva la estructura desde la raíz común (las tarjetas nunca se parten ni renombran; con varios discos, `/Volumes/X/…` → `DEST/X/…`). Las tarjetas con MHL se copian con su MHL tal cual (`ascmhl/` o `.mhl` legacy). Un fichero que ya está en destino con el mismo tamaño no se recopia (la verificación decide); con **otro tamaño no se sobrescribe nunca** (puede ser de una entrega anterior): es un error y no se escribe el MHL (D21). Solo un trabajo a la vez por destino: un segundo trabajo hacia la misma carpeta se para sin copiar nada.
 3. **Verificar (solo lectura)** — cada fichero de tarjeta contra su MHL de origen (md5/sha1/xxh64/xxh128/xxh3/c4, o el `.mhl` legacy); los ficheros sin MHL, origen contra destino. Una sola lectura calcula todos los hashes.
 4. **MHL del media management** — solo si todo cuadra: ASC MHL (xxh64) en `DEST/ascmhl/`, escrito con la librería `ascmhl` reutilizando los hashes del paso 3. Según el spec, cada tarjeta recibe una generación *verified* que la raíz referencia; las generaciones del DIT no se tocan.
 
@@ -36,7 +38,7 @@ bash install.sh          # copia
 bash install.sh --link   # enlace al repo (desarrollo)
 ```
 
-Requisitos: Resolve Studio (UIManager), Python 3 de python.org y `ascmhl` (`pip install ascmhl`, trae `xxhash`; probado con `ascmhl` 1.2).
+Requisitos: Resolve Studio (UIManager; probado en 21.1.1), Python ≥ 3.11 de python.org y `ascmhl` **1.2** exacto (`pip3 install 'ascmhl==1.2'`, trae `xxhash`). `install.sh` lo comprueba e instala.
 
 ## Sin GUI
 
