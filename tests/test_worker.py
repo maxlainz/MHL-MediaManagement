@@ -75,15 +75,18 @@ def test_md5_en_mayusculas_del_dit_falla_limpio(tmp_path):
     assert sorted(p.name for p in (card / "ascmhl").iterdir()) == gens
 
 
-def test_relanzado_con_fichero_cambiado_no_escribe_failed(tmp_path, media, ascmhl_debug_cli):
+def test_relanzado_con_fichero_cambiado_no_pisa_la_entrega_ni_escribe_failed(tmp_path, media, ascmhl_debug_cli):
     gfx = write_bin(media["src"] / "gfx" / "title.mov", seed=5, size=1000)
     dest = tmp_path / "dest"
     r = run_pull(tmp_path, [*media["clips"], gfx], dest, "--all")
     assert r.returncode == 0, out(r)
+    before = (dest / "gfx" / "title.mov").read_bytes()
     write_bin(gfx, seed=6, size=1500)  # re-exportado: otro contenido y otro tamaño
     r = run_pull(tmp_path, [*media["clips"], gfx], dest, "--all")
     assert r.returncode == 1, out(r)
-    assert "generación anterior" in out(r)
+    assert "otro tamaño; no se sobrescribe" in out(r)  # D21: la entrega verificada queda intacta
+    assert (dest / "gfx" / "title.mov").read_bytes() == before
+    assert verify(tmp_path, ascmhl_debug_cli, dest).returncode == 0
     assert len(mhl_files(dest / "ascmhl")) == 1
     assert not [p for p in dest.rglob("*.mhl") if 'action="failed"' in p.read_text()]
 
@@ -270,3 +273,22 @@ def test_legacy_con_nombre_nfc_y_disco_nfd(tmp_path, keeps_form, ascmhl_debug_cl
     assert NFD in os.listdir(dest / "B001" / "CLIP")
     v = verify(tmp_path, ascmhl_debug_cli, dest)
     assert v.returncode == 0, out(v)
+
+
+def test_verificacion_legacy_lee_el_mhl_una_vez_por_tarjeta(tmp_path, mp, monkeypatch):
+    card = tmp_path / "src" / "B001"
+    rows = []
+    for i in range(30):
+        f = write_bin(card / "CLIP" / f"f{i:03d}.exr", seed=i, size=64)
+        rows.append(f"<hash><file>CLIP/{f.name}</file><size>64</size>"
+                    f"<xxhash64be>{xxhash.xxh64(f.read_bytes()).hexdigest()}</xxhash64be></hash>")
+    (card / "B001.mhl").write_text("<?xml version='1.0' encoding='UTF-8'?><hashlist version='1.1'>"
+                                   + "".join(rows) + "</hashlist>")
+    plan = mp.build_plan(mp.scan([str(p) for p in sorted((card / "CLIP").iterdir())], log=lambda *_: None))
+    jp = tmp_path / "job.json"
+    jp.write_text(json.dumps(mp.job_from_plan(plan, tmp_path / "dest", False, "t")))
+    calls, orig = [0], mp.parse_legacy
+    monkeypatch.setattr(mp, "parse_legacy", lambda p: (calls.__setitem__(0, calls[0] + 1), orig(p))[1])
+    monkeypatch.setattr(mp, "LOG_DIR", tmp_path / "logs")
+    assert mp.worker(str(jp)) == 0
+    assert calls[0] == 1  # antes, una vez por fichero (cuadrático en secuencias)
